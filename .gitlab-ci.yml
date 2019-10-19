@@ -1,0 +1,23 @@
+stages:
+  - test
+  - build
+
+test:
+  stage: test
+  image: rust:1.38.0-slim
+  script:
+    - cargo test
+
+build:
+  stage: build
+  image: docker:latest
+  services:
+    - docker:dind
+  before_script:
+    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" $CI_REGISTRY
+  script:
+    - docker build --pull -t "registry.gitlab.com/chris13524/tacodns" .
+    - docker push "registry.gitlab.com/chris13524/tacodns"
+  only:
+    - master
+

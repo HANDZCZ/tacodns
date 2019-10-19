@@ -1,0 +1,232 @@
+## Note that the content in this file isn't exactly correct.
+## YAML doesn't support duplicate keys. So if you see duplicate
+## keys, that's just a demonstration of the options you have.
+
+listen: 127.0.0.1:53
+listen:
+  - 127.0.0.1:53
+  - [::1]:53
+
+log-query: true # logs all queries to the server
+log-result: true # logs all results served
+
+flatten-cnames: true # flatten CNAMES
+
+# fallback values for variables when they aren't in the environment
+# when no fallback is found, the application fails to start
+variables:
+  SECRET: value
+  SECRET:
+    file: /path/to/content.file # pull the content from a file
+    default: value # and if that fails, use this default value
+
+# list of servers that are the only ones allowed to query this server
+whitelist:
+  - 127.0.0.1/32
+
+# list of servers that are not allowed to query this server
+blacklist:
+  - 1.1.1.1/32
+
+# These are the default nameservers for each root zone.
+# The first one will be listed in the SOA record.
+# These are also used as response values for URL records.
+# These should point to this server.
+authority:
+  - ns1.example.com.
+  - ns2.example.com.
+
+# glue records
+# generally only used if you're a registrar
+glue:
+  - ns1.example.com:
+      A: 10.10.10.10
+      AAAA: 2001:0db8:85a3:0000:0000:8a2e:0370:7334
+  - ns2.example.com:
+      A: 10.10.10.10
+      AAAA: 2001:0db8:85a3:0000:0000:8a2e:0370:7334
+
+# DNSSEC key to sign zone with
+dnssec:
+  key: ...
+
+# this is used later in this file
+x-digitalocean-ns:
+  &digitalocean-ns
+  NS:
+    - ns1.digitalocean.com.
+    - ns2.digitalocean.com.
+    - ns3.digitalocean.com.
+
+ttl: 30m # default TTL
+
+# all your zones!
+# Zones are matched in order. Once one of them returns a result, further ones will not resolve.
+zones:
+
+  # simple example you should be familiar with
+  # results in:
+  #   example.com.     1800 IN A     10.10.10.10
+  #   example.com.     1800 IN AAAA  2001:0db8:85a3:0000:0000:8a2e:0370:7334
+  #   www.example1.com 1800 IN CNAME example.com.
+  example.com:
+    A: 10.10.10.10
+    AAAA: 2001:0db8:85a3:0000:0000:8a2e:0370:7334
+  www.example.com:
+    CNAME: example.com.
+
+  # listing multiple values for a record type
+  example.com:
+    A:
+      - 10.10.10.10
+      - 11.11.11.11
+
+  # convenient syntax for subdomains
+  # all record types must be capitalized, all subdomains must be lowercased, that's how they are differentiated
+  example.com:
+    A: 10.10.10.10
+    www:
+      CNAME: example.com.
+
+  # example of an ALIAS record
+  # like a flattened-CNAME, but only for A and AAAA records
+  example.com:
+    ALIAS: example2.com.
+    MX: mail.example.com.
+
+  # URL records resolve A and AAAA to an HTTP server hosted here which triggers a temporary redirect (302)
+  # it returns the address records that are resolved from all the nameservers listed in the `authority` field
+  "***.example.com":
+    URL: https://new-example.com
+  "***.example.com":
+    URL:
+      url: https://new-example.com
+      permenant: true # make it permanent (301)
+
+  # mail record
+  # the priority field is optional, by default it is 10
+  example.com:
+    MX: mail.example.com.
+  example.com:
+    MX:
+      priority: 10
+      host: mail.example.com.
+
+  # overriding TTL values
+  example.com 15m:
+    A 1m:
+      - 10.10.10.10 0 # has 0 TTL
+      - 192.168.0.1 # has 1m TTL
+    AAAA: ::1 # has 15m TTL
+
+  # delegate subdomain
+  example.com:
+    NS:
+      - ns1.digitalocean.com.
+      - ns2.digitalocean.com.
+      - ns3.digitalocean.com.
+
+  # make that tedious process easier
+  example.com: *digitalocean-ns
+  sub1.example.com: *digitalocean-ns
+  sub2.example.com: *digitalocean-ns
+
+  # examples of other records
+  # note that only one record type is allowed, duplicates are for demonstration only
+  example.com:
+    TXT: contents 1m
+    TXT:
+      - content1 1m
+      - content2 1m
+    TXT 1m:
+      name: xyz101 # special syntax to avoid making a subdomain
+      value: xyzxyz
+      ttl: 1m
+    CAA: letsencrypt.org 1m # default flag:0 tag:issuewild
+    CAA:
+      flag: 0
+      tag: issue
+      value: letsencrypt.org
+      ttl: 1m
+    SRV:
+      service: caldavs
+      protocol: tcp
+      priority: 0
+      weight: 0
+      port: 443
+      target: caldav.example.com.
+      ttl: 1m
+    SRV 1m:
+      - service: caldavs
+        protocol: tcp
+        priority: 0
+        weight: 0
+        port: 443
+        target: caldav.example.com.
+    sshfp:
+      - algorithm: 2
+        type: 1
+        fingerprint: 123456789abcdef67890123456789abcdef67890
+        ttl: 1m
+
+  # order of returned records is randomized
+  example.com:
+    A scramble:
+      - 10.10.10.10
+      - 11.11.11.11
+
+  # roundrobin load balancing
+  # only one record is returned
+  example.com:
+    A roundrobin:
+      - 10.10.10.10
+      - 11.11.11.11
+
+  # wildcards
+  "*.example.com": # any subdomain
+  "*.*.example.com": # any subdomain of any subdomain
+  "**.example.com": # entire subdomain zone
+  "***.example.com": # entire zone (including example.com)
+
+  # multiple zones
+  example.com, example2.com:
+
+  # regex
+  /example\.(?:com|org)/: # matches example.com or example.org
+  /.*/: # matches anything
+    URL: https://parked.com/$0 # and redirects it to https://parked.com/domain.tld
+
+  # environment variables
+  $DOMAIN:
+  sub.$DOMAIN:
+  example.com:
+    A: $A_RECORD
+    AAAA:
+      - $AAAA_RECORD
+
+  # dynamic DNS with the tilde (~) prefixing the value
+  # useful for ACME or situations where IP addresses always change
+  # generate a (secure) secret value to use for authentication
+  # the value must be unique
+  # POST http://<nameserver>:80/$SECRET
+  # fdashjklfdsahjklfdsahjklfdsahjklfdsa
+  # DELETE http://<nameserver>:80/$SECRET
+  example.com:
+    TXT:
+      name: _acme-challenge
+      value: ~$SECRET
+      ttl: 0
+
+  # a "TRY" record
+  # the DNS server(s) listed will be queried for the results
+  # if no results are returned, matching will continue
+  /.*/:
+    TRY: 8.8.8.8
+
+  # a "QUERY" record
+  # the DNS server(s) listed will be queried for the results
+  # if no results are returned, resolution fails with a NXDOMAIN
+  # this is essentially a reverse proxy
+  # behavior to end-users is the same as a NS record, only thing is this server remains authoritative
+  /.*/:
+    QUERY: 8.8.8.8

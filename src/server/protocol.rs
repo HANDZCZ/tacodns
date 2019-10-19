@@ -1,5 +1,12 @@
+extern crate byteorder;
+
+use std::io::{self, Cursor, Read, Write};
+
+use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
+
 #[derive(Debug, Default)]
 pub struct Header {
+	// https://tools.ietf.org/html/rfc1035#page-26
 	pub id: u16,
 	pub qr: bool,
 	// 4 bits
@@ -21,13 +28,13 @@ pub struct Question {
 	pub qclass: u16,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq)]
 pub struct Resource {
 	pub rname: Vec<String>,
 	pub rtype: u16,
 	pub rclass: u16,
 	pub ttl: u32,
-	pub rdata: Vec<u8>,
+	pub rdata: Box<[u8]>,
 }
 
 #[derive(Debug, Default)]
@@ -38,12 +45,6 @@ pub struct Message {
 	pub authority: Vec<Resource>,
 	pub additional: Vec<Resource>,
 }
-
-use std::io::{self, Cursor, Read, Write};
-
-extern crate byteorder;
-
-use byteorder::{ReadBytesExt, WriteBytesExt, BigEndian};
 
 pub fn parse(buf: &[u8]) -> io::Result<Message> {
 	let mut message: Message = Default::default();
@@ -115,7 +116,7 @@ pub fn parse(buf: &[u8]) -> io::Result<Message> {
 			let rdata_len = cursor.read_u16::<BigEndian>()?;
 			let mut rdata_buf = vec![0; rdata_len as usize];
 			cursor.read_exact(rdata_buf.as_mut())?;
-			resource.rdata = rdata_buf;
+			resource.rdata = rdata_buf.into_boxed_slice();
 			
 			resources.push(resource);
 		}
@@ -171,7 +172,7 @@ pub fn serialize(message: &Message) -> Vec<u8> {
 			cursor.write_u16::<BigEndian>(resource.rclass).unwrap();
 			cursor.write_u32::<BigEndian>(resource.ttl).unwrap();
 			cursor.write_u16::<BigEndian>(resource.rdata.len() as u16).unwrap();
-			cursor.write_all(resource.rdata.as_slice()).unwrap();
+			cursor.write_all(resource.rdata.as_ref()).unwrap();
 		}
 	}
 	write_resources(&mut cursor, &message.answer);

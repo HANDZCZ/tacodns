@@ -1,0 +1,7 @@
+.idea
+*.iml
+out
+target
+.dockerignore
+Dockerfile
+docker-compose.yml
