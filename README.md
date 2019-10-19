@@ -1,6 +1,6 @@
 # TacoDNS
 
-Developer-friendly DNS server.
+Developer-friendly authoritative DNS server.
 
 ```
 version: "3.5"
