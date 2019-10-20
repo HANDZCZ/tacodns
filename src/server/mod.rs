@@ -57,18 +57,23 @@ pub fn serve(opts: &Options, config: &Config) {
 		message.header.qr = true;
 		message.header.aa = true;
 		message.header.ra = false;
-		message.header.rcode = 0;
 		
 		match response {
 			Response::Ok(answer, authority, additional) => {
+				message.header.rcode = 0;
 				message.answer = answer;
 				message.authority = authority;
 				message.additional = additional;
-				if opts.verbose { println!("response: {:?}", message); }
-				socket.send_to(protocol::serialize(&message).as_slice(), src).unwrap();
 			}
-			_ => unimplemented!("{:?}", response)
+			Response::FormatError => message.header.rcode = 1,
+			Response::ServerFailure => message.header.rcode = 2,
+			Response::NameError => message.header.rcode = 3,
+			Response::NotImplemented => message.header.rcode = 4,
+			Response::Refused => message.header.rcode = 5,
 		}
+		
+		if opts.verbose { println!("response: {:?}", message); }
+		socket.send_to(protocol::serialize(&message).as_slice(), src).unwrap();
 	}
 }
 
@@ -162,7 +167,7 @@ fn handle_dns(question: &Vec<Question>, config: &Config) -> Response {
 							if let Response::Ok(mut answer, _, _) = handle_dns(&vec![Question {
 								qname: string_labels.clone(),
 								qtype: record_type::A,
-								qclass: 1
+								qclass: 1,
 							}], config) {
 								additional.append(&mut answer);
 							}
@@ -171,7 +176,7 @@ fn handle_dns(question: &Vec<Question>, config: &Config) -> Response {
 							if let Response::Ok(mut answer, _, _) = handle_dns(&vec![Question {
 								qname: string_labels,
 								qtype: record_type::AAAA,
-								qclass: 1
+								qclass: 1,
 							}], config) {
 								additional.append(&mut answer);
 							}
@@ -196,6 +201,10 @@ fn handle_dns(question: &Vec<Question>, config: &Config) -> Response {
 		}
 	}
 	
+	if answer.len() == 0 {
+		return Response::NameError;
+	}
+	
 	return Response::Ok(answer, authority, additional);
 }
 
@@ -218,7 +227,7 @@ fn test_a() {
 				aaaa: vec![],
 				ns: vec![],
 			},
-		}]
+		}],
 	}), Response::Ok(vec![Resource {
 		rname: vec!["example".to_string(), "com".to_string()],
 		rtype: record_type::A,
@@ -247,7 +256,7 @@ fn test_a() {
 				aaaa: vec![],
 				ns: vec![],
 			},
-		}]
+		}],
 	}), Response::Ok(vec![Resource {
 		rname: vec!["example".to_string(), "com".to_string()],
 		rtype: record_type::A,
@@ -282,7 +291,7 @@ fn test_aaaa() {
 				}],
 				ns: vec![],
 			},
-		}]
+		}],
 	}), Response::Ok(vec![Resource {
 		rname: vec!["example".to_string(), "com".to_string()],
 		rtype: record_type::AAAA,
@@ -311,7 +320,7 @@ fn test_aaaa() {
 				}],
 				ns: vec![],
 			},
-		}]
+		}],
 	}), Response::Ok(vec![Resource {
 		rname: vec!["example".to_string(), "com".to_string()],
 		rtype: record_type::AAAA,
