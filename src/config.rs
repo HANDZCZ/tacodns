@@ -1,7 +1,6 @@
 extern crate yaml_rust;
 
 use std::net::{Ipv4Addr, Ipv6Addr};
-use std::ops::Deref;
 use std::time::Duration;
 
 use yaml_rust::{Yaml, yaml, YamlLoader};
@@ -17,15 +16,28 @@ pub enum ZoneMatcher {
 }
 
 #[derive(Debug, PartialEq)]
-pub struct Record {
+pub struct ARecord {
 	pub ttl: Duration,
-	pub data: Box<[u8]>,
+	pub ip4addr: Ipv4Addr,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct AaaaRecord {
+	pub ttl: Duration,
+	pub ip6addr: Ipv6Addr,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct NsRecord {
+	pub ttl: Duration,
+	pub name: String,
 }
 
 #[derive(Debug, Default, PartialEq)]
 pub struct Records {
-	pub a: Vec<Record>,
-	pub aaaa: Vec<Record>,
+	pub a: Vec<ARecord>,
+	pub aaaa: Vec<AaaaRecord>,
+	pub ns: Vec<NsRecord>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -36,6 +48,8 @@ pub struct Zone {
 
 #[derive(Debug, PartialEq)]
 pub struct Config {
+	pub ttl: Duration,
+	pub authority: Vec<String>,
 	pub zones: Vec<Zone>,
 }
 
@@ -47,6 +61,20 @@ pub fn parse(yaml_data: &str) -> Config {
 	if docs.len() > 1 { panic!("Expected only one document."); }
 	let yaml = docs[0].as_hash().expect("Expected document to be mapping.");
 	
+	let authority: Vec<String> = match yaml.get(&Yaml::String("authority".to_string())) {
+		Some(authority_value) => {
+			let mut authority = vec![];
+			for entry in arrayify(authority_value.clone()) {
+				match entry {
+					Yaml::String(value) => authority.push(value),
+					_ => panic!("Expected string values for authority entries. Got: {:?}", entry),
+				}
+			}
+			authority
+		}
+		None => vec![],
+	};
+	
 	let ttl = match yaml.get(&Yaml::String("ttl".to_string())) {
 		Some(ttl_value) => Duration::from_yaml(ttl_value),
 		None => DEFAULT_TTL,
@@ -56,6 +84,8 @@ pub fn parse(yaml_data: &str) -> Config {
 	let zones = parse_zones(zones_data, ttl);
 	
 	return Config {
+		ttl,
+		authority,
 		zones,
 	};
 }
@@ -98,6 +128,14 @@ fn parse_zone_name(zone_name: &str) -> ZoneMatcher {
 	}
 }
 
+fn arrayify(value: Yaml) -> yaml::Array {
+	match value {
+		Yaml::Array(array) => array,
+		Yaml::Null => vec![],
+		value => vec![value],
+	}
+}
+
 fn parse_zone_content(zone: &yaml::Hash, ttl: Duration) -> Records {
 	let mut records = Records::default();
 	
@@ -105,32 +143,36 @@ fn parse_zone_content(zone: &yaml::Hash, ttl: Duration) -> Records {
 		let (key_record_type, ttl) = extract_ttl(key, ttl);
 		
 		if key_record_type.to_uppercase().as_str() == key_record_type {
-			fn arrayify(value: Yaml) -> yaml::Array {
-				match value {
-					Yaml::Array(array) => array,
-					Yaml::Null => vec![],
-					value => vec![value],
-				}
-			}
 			let entries = arrayify(value.clone());
 			match key_record_type {
 				"A" => {
-					for record in entries {
-						let (value, ttl) = extract_ttl(&record, ttl);
+					for entry in entries {
+						let (value, ttl) = extract_ttl(&entry, ttl);
 						let ip4_addr: Ipv4Addr = value.parse().expect(format!("Value not valid IPv4 address: {:?}", value).as_str());
-						records.a.push(Record {
+						records.a.push(ARecord {
 							ttl,
-							data: Box::new(ip4_addr.octets()),
+							ip4addr: ip4_addr,
 						});
 					}
 				}
 				"AAAA" => {
-					for record in entries {
-						let (value, ttl) = extract_ttl(&record, ttl);
+					for entry in entries {
+						let (value, ttl) = extract_ttl(&entry, ttl);
 						let ip6_addr: Ipv6Addr = value.parse().expect(format!("Value not valid IPv6 address: {:?}", value).as_str());
-						records.aaaa.push(Record {
+						records.aaaa.push(AaaaRecord {
 							ttl,
-							data: Box::new(ip6_addr.octets()),
+							ip6addr: ip6_addr,
+						});
+					}
+				}
+				"NS" => {
+					for entry in entries {
+						let (value, ttl) = extract_ttl(&entry, ttl);
+						let mut nameserver = value.to_string();
+						if nameserver.ends_with(".") { nameserver.split_off(nameserver.len() - 2); }
+						records.ns.push(NsRecord {
+							ttl,
+							name: nameserver,
 						});
 					}
 				}
@@ -173,14 +215,17 @@ fn test_a() {
 	assert_eq!(parse(r"zones:
   example.com:
     A: 127.0.0.1"), Config {
+		ttl: DEFAULT_TTL,
+		authority: vec![],
 		zones: vec![Zone {
 			matcher: ZoneMatcher::Basic("example.com".to_string()),
 			records: Records {
-				a: vec![Record {
+				a: vec![ARecord {
 					ttl: DEFAULT_TTL,
-					data: Box::new([127, 0, 0, 1]),
+					ip4addr: "127.0.0.1".parse().unwrap(),
 				}],
 				aaaa: vec![],
+				ns: vec![],
 			},
 		}]
 	});
@@ -191,14 +236,17 @@ fn test_aaaa() {
 	assert_eq!(parse(r"zones:
   example.com:
     AAAA: ::1"), Config {
+		ttl: DEFAULT_TTL,
+		authority: vec![],
 		zones: vec![Zone {
 			matcher: ZoneMatcher::Basic("example.com".to_string()),
 			records: Records {
 				a: vec![],
-				aaaa: vec![Record {
+				aaaa: vec![AaaaRecord {
 					ttl: DEFAULT_TTL,
-					data: Box::new([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]),
+					ip6addr: "::1".parse().unwrap(),
 				}],
+				ns: vec![],
 			},
 		}]
 	});

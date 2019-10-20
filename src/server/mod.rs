@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use protocol::Resource;
 
-use crate::config::{Config, Record, Records, Zone, ZoneMatcher};
+use crate::config::{AaaaRecord, ARecord, Config, NsRecord, Records, Zone, ZoneMatcher};
 use crate::options::Options;
 use crate::server::protocol::Question;
 
@@ -67,7 +67,7 @@ pub fn serve(opts: &Options, config: &Config) {
 				if opts.verbose { println!("response: {:?}", message); }
 				socket.send_to(protocol::serialize(&message).as_slice(), src).unwrap();
 			}
-			_ => unimplemented!()
+			_ => unimplemented!("{:?}", response)
 		}
 	}
 }
@@ -107,12 +107,75 @@ fn handle_dns(question: &Vec<Question>, config: &Config) -> Response {
 								rtype: question.qtype,
 								rclass: question.qclass,
 								ttl: a.ttl.as_secs() as u32,
-								rdata: a.data.clone(),
+								rdata: a.ip4addr.octets().to_vec(),
+							});
+						}
+					}
+					record_type::AAAA => {
+						for aaaa in &zone.records.aaaa {
+							answer.push(Resource {
+								rname: question.qname.clone(),
+								rtype: question.qtype,
+								rclass: question.qclass,
+								ttl: aaaa.ttl.as_secs() as u32,
+								rdata: aaaa.ip6addr.octets().to_vec(),
 							});
 						}
 					}
 					record_type::NS => {
-						return Response::NotImplemented;
+						let mut ns_records = vec![];
+						let ns_records: &Vec<NsRecord> = if zone.records.ns.len() == 0 {
+							// fallback to the zone authority
+							for authority in &config.authority {
+								ns_records.push(NsRecord {
+									ttl: config.ttl,
+									name: authority.clone(),
+								});
+							}
+							&ns_records
+						} else {
+							&zone.records.ns
+						};
+						for ns in ns_records {
+							let mut name: Vec<u8> = vec![];
+							let labels: Vec<&str> = ns.name.split(".").collect();
+							for label in &labels {
+								name.push(label.len() as u8);
+								name.append(&mut label.as_bytes().to_vec());
+							}
+							name.push(0);
+							answer.push(Resource {
+								rname: question.qname.clone(),
+								rtype: question.qtype,
+								rclass: question.qclass,
+								ttl: ns.ttl.as_secs() as u32,
+								rdata: name,
+							});
+							
+							// lookup A and AAAA records for this to go in the additional section
+							let mut string_labels = vec![];
+							for label in &labels {
+								string_labels.push(label.to_string());
+							}
+							
+							// lookup A
+							if let Response::Ok(mut answer, _, _) = handle_dns(&vec![Question {
+								qname: string_labels.clone(),
+								qtype: record_type::A,
+								qclass: 1
+							}], config) {
+								additional.append(&mut answer);
+							}
+							
+							// lookup AAAA
+							if let Response::Ok(mut answer, _, _) = handle_dns(&vec![Question {
+								qname: string_labels,
+								qtype: record_type::AAAA,
+								qclass: 1
+							}], config) {
+								additional.append(&mut answer);
+							}
+						}
 					}
 					record_type::SOA => {
 						return Response::NotImplemented;
@@ -122,17 +185,6 @@ fn handle_dns(question: &Vec<Question>, config: &Config) -> Response {
 					}
 					record_type::TXT => {
 						return Response::NotImplemented;
-					}
-					record_type::AAAA => {
-						for a in &zone.records.aaaa {
-							answer.push(Resource {
-								rname: question.qname.clone(),
-								rtype: question.qtype,
-								rclass: question.qclass,
-								ttl: a.ttl.as_secs() as u32,
-								rdata: a.data.clone(),
-							});
-						}
 					}
 					record_type::SRV => {
 						return Response::NotImplemented;
@@ -154,14 +206,17 @@ fn test_a() {
 		qtype: record_type::A,
 		qclass: 1,
 	}], &Config {
+		ttl: Duration::from_secs(1800),
+		authority: vec![],
 		zones: vec![Zone {
 			matcher: ZoneMatcher::Basic("example.com".to_string()),
 			records: Records {
-				a: vec![Record {
+				a: vec![ARecord {
 					ttl: Duration::from_secs(100),
-					data: Box::new([10, 10, 10, 10]),
+					ip4addr: "10.10.10.10".parse().unwrap(),
 				}],
 				aaaa: vec![],
+				ns: vec![],
 			},
 		}]
 	}), Response::Ok(vec![Resource {
@@ -169,7 +224,7 @@ fn test_a() {
 		rtype: record_type::A,
 		rclass: 1,
 		ttl: 100,
-		rdata: Box::new([10, 10, 10, 10]),
+		rdata: vec![10, 10, 10, 10],
 	}], vec![], vec![]));
 	
 	assert_eq!(handle_dns(&vec![Question {
@@ -177,17 +232,20 @@ fn test_a() {
 		qtype: record_type::A,
 		qclass: 1,
 	}], &Config {
+		ttl: Duration::from_secs(1800),
+		authority: vec![],
 		zones: vec![Zone {
 			matcher: ZoneMatcher::Basic("example.com".to_string()),
 			records: Records {
-				a: vec![Record {
+				a: vec![ARecord {
 					ttl: Duration::from_secs(100),
-					data: Box::new([10, 10, 10, 10]),
-				}, Record {
+					ip4addr: "10.10.10.10".parse().unwrap(),
+				}, ARecord {
 					ttl: Duration::from_secs(100),
-					data: Box::new([11, 11, 11, 11]),
+					ip4addr: "11.11.11.11".parse().unwrap(),
 				}],
 				aaaa: vec![],
+				ns: vec![],
 			},
 		}]
 	}), Response::Ok(vec![Resource {
@@ -195,13 +253,13 @@ fn test_a() {
 		rtype: record_type::A,
 		rclass: 1,
 		ttl: 100,
-		rdata: Box::new([10, 10, 10, 10]),
+		rdata: vec![10, 10, 10, 10],
 	}, Resource {
 		rname: vec!["example".to_string(), "com".to_string()],
 		rtype: record_type::A,
 		rclass: 1,
 		ttl: 100,
-		rdata: Box::new([11, 11, 11, 11]),
+		rdata: vec![11, 11, 11, 11],
 	}], vec![], vec![]));
 }
 
@@ -212,14 +270,17 @@ fn test_aaaa() {
 		qtype: record_type::AAAA,
 		qclass: 1,
 	}], &Config {
+		ttl: Duration::from_secs(1800),
+		authority: vec![],
 		zones: vec![Zone {
 			matcher: ZoneMatcher::Basic("example.com".to_string()),
 			records: Records {
 				a: vec![],
-				aaaa: vec![Record {
+				aaaa: vec![AaaaRecord {
 					ttl: Duration::from_secs(100),
-					data: Box::new([10, 10, 10, 10]),
+					ip6addr: "::1".parse().unwrap(),
 				}],
+				ns: vec![],
 			},
 		}]
 	}), Response::Ok(vec![Resource {
@@ -227,7 +288,7 @@ fn test_aaaa() {
 		rtype: record_type::AAAA,
 		rclass: 1,
 		ttl: 100,
-		rdata: Box::new([10, 10, 10, 10]),
+		rdata: vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
 	}], vec![], vec![]));
 	
 	assert_eq!(handle_dns(&vec![Question {
@@ -235,17 +296,20 @@ fn test_aaaa() {
 		qtype: record_type::AAAA,
 		qclass: 1,
 	}], &Config {
+		ttl: Duration::from_secs(1800),
+		authority: vec![],
 		zones: vec![Zone {
 			matcher: ZoneMatcher::Basic("example.com".to_string()),
 			records: Records {
 				a: vec![],
-				aaaa: vec![Record {
+				aaaa: vec![AaaaRecord {
 					ttl: Duration::from_secs(100),
-					data: Box::new([10, 10, 10, 10]),
-				}, Record {
+					ip6addr: "::2".parse().unwrap(),
+				}, AaaaRecord {
 					ttl: Duration::from_secs(100),
-					data: Box::new([11, 11, 11, 11]),
+					ip6addr: "::3".parse().unwrap(),
 				}],
+				ns: vec![],
 			},
 		}]
 	}), Response::Ok(vec![Resource {
@@ -253,12 +317,12 @@ fn test_aaaa() {
 		rtype: record_type::AAAA,
 		rclass: 1,
 		ttl: 100,
-		rdata: Box::new([10, 10, 10, 10]),
+		rdata: vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2],
 	}, Resource {
 		rname: vec!["example".to_string(), "com".to_string()],
 		rtype: record_type::AAAA,
 		rclass: 1,
 		ttl: 100,
-		rdata: Box::new([11, 11, 11, 11]),
+		rdata: vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3],
 	}], vec![], vec![]));
 }

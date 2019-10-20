@@ -34,7 +34,7 @@ pub struct Resource {
 	pub rtype: u16,
 	pub rclass: u16,
 	pub ttl: u32,
-	pub rdata: Box<[u8]>,
+	pub rdata: Vec<u8>,
 }
 
 #[derive(Debug, Default)]
@@ -116,7 +116,7 @@ pub fn parse(buf: &[u8]) -> io::Result<Message> {
 			let rdata_len = cursor.read_u16::<BigEndian>()?;
 			let mut rdata_buf = vec![0; rdata_len as usize];
 			cursor.read_exact(rdata_buf.as_mut())?;
-			resource.rdata = rdata_buf.into_boxed_slice();
+			resource.rdata = rdata_buf;
 			
 			resources.push(resource);
 		}
