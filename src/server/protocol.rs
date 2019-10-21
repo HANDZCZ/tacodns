@@ -129,6 +129,17 @@ pub fn parse(buf: &[u8]) -> io::Result<Message> {
 	return Ok(message);
 }
 
+/// Takes a list of labels (e.g. `["google", "com"]`) and converts it into a binary format useful for rdata
+pub fn serialize_name<'a, I: IntoIterator<Item=&'a str>>(name: I) -> Vec<u8> {
+	let mut bytes = vec![];
+	for label in name {
+		bytes.push(label.len() as u8);
+		bytes.append(&mut label.as_bytes().to_vec());
+	}
+	bytes.push(0);
+	return bytes;
+}
+
 pub fn serialize(message: &Message) -> Vec<u8> {
 	let mut cursor = Cursor::new(Vec::new());
 	
@@ -151,23 +162,14 @@ pub fn serialize(message: &Message) -> Vec<u8> {
 	cursor.write_u16::<BigEndian>(message.additional.len() as u16).unwrap();
 	
 	for question in &message.question {
-		for label in &question.qname {
-			cursor.write_u8(label.len() as u8).unwrap();
-			cursor.write_all(label.as_bytes()).unwrap();
-		}
-		cursor.write_u8(0).unwrap();
+		cursor.write_all(serialize_name(question.qname.iter().map(|label| label.as_str())).as_slice()).unwrap();
 		cursor.write_u16::<BigEndian>(question.qtype).unwrap();
 		cursor.write_u16::<BigEndian>(question.qclass).unwrap();
 	}
 	
 	fn write_resources(cursor: &mut Cursor<Vec<u8>>, resources: &Vec<Resource>) {
 		for resource in resources {
-			for label in &resource.rname {
-				cursor.write_u8(label.len() as u8).unwrap();
-				cursor.write_all(label.as_bytes()).unwrap();
-			}
-			cursor.write_u8(0).unwrap();
-			
+			cursor.write_all(serialize_name(resource.rname.iter().map(|label| label.as_str())).as_slice()).unwrap();
 			cursor.write_u16::<BigEndian>(resource.rtype).unwrap();
 			cursor.write_u16::<BigEndian>(resource.rclass).unwrap();
 			cursor.write_u32::<BigEndian>(resource.ttl).unwrap();

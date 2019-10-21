@@ -36,22 +36,6 @@ pub fn serve(opts: &Options, config: &Config) {
 		};
 		if opts.verbose { println!("request: {:?}", message); }
 		
-		/*request.answer = Vec::with_capacity(request.question.len());
-		for question in &request.question {
-			// respond to all A requests with 127.0.0.1
-			if question.qtype == 1 {
-				request.answer.push(Resource {
-					rname: question.qname.clone(),
-					rtype: 1,
-					rclass: 1,
-					ttl: 1800,
-					rdata: vec![127, 0, 0, 1],
-				});
-			}
-		}
-		request.authority = Vec::new();
-		request.additional = Vec::new();*/
-		
 		let response = handle_dns(&message.question, &config);
 		
 		message.header.qr = true;
@@ -107,11 +91,15 @@ fn handle_dns(question: &Vec<Question>, config: &Config) -> Response {
 				if zone.records.cname.len() > 0 {
 					for cname in &zone.records.cname {
 						// lookup other records
+						
+						// generate the full name this maps to, with the trailing dot removed
 						let new_name = if cname.name.ends_with(".") {
+							// CNAME is absolute
 							let mut name = cname.name.clone();
 							name.split_off(name.len() - 1);
 							name
 						} else {
+							// CNAME is relative; make it absolute
 							let mut parent_name = qname.clone();
 							if let Some(index) = parent_name.find(".") {
 								parent_name = parent_name.split_off(index + 1);
@@ -119,31 +107,21 @@ fn handle_dns(question: &Vec<Question>, config: &Config) -> Response {
 							cname.name.clone() + "." + parent_name.as_str()
 						};
 						
-						let mut name: Vec<u8> = vec![];
-						let labels: Vec<&str> = new_name.split(".").collect();
-						for label in &labels {
-							name.push(label.len() as u8);
-							name.append(&mut label.as_bytes().to_vec());
-						}
-						name.push(0);
+						// add the CNAME to our result
 						answer.push(Resource {
 							rname: question.qname.clone(),
 							rtype: record_type::CNAME,
 							rclass: question.qclass,
 							ttl: cname.ttl.as_secs() as u32,
-							rdata: name,
+							rdata: protocol::serialize_name(new_name.split('.')),
 						});
 						
-						let mut labels: Vec<&str> = new_name.split(".").collect();
-						let mut string_labels = vec![];
-						for label in &labels {
-							string_labels.push(label.to_string());
-						}
-						// Note that this might trigger a stack overflow
-						// We aren't handling this right now and shouldn't be considered a security issue
-						// It's the fault of the configurer for not configuring it right
+						// follow the CNAME and lookup records there
+						// (Note that this might trigger a stack overflow. We aren't handling this
+						// right now and shouldn't be considered a security issue. It's the fault of
+						// the configurer for not configuring it right.)
 						if let Response::Ok(mut cname_answer, _, _) = handle_dns(&vec![Question {
-							qname: string_labels,
+							qname: new_name.split(".").map(|label|label.to_string()).collect(),
 							qtype: question.qtype,
 							qclass: 1,
 						}], config) {
@@ -175,9 +153,10 @@ fn handle_dns(question: &Vec<Question>, config: &Config) -> Response {
 							}
 						}
 						record_type::NS => {
-							let mut ns_records = vec![];
+							let mut ns_records = vec![]; // this needs to be out here to fix a ownership issue
+							
+							// if this zone doesn't have any NS records, inherit from the top-level zone authority
 							let ns_records: &Vec<NsRecord> = if zone.records.ns.len() == 0 {
-								// fallback to the zone authority
 								for authority in &config.authority {
 									ns_records.push(NsRecord {
 										ttl: config.ttl,
@@ -188,27 +167,19 @@ fn handle_dns(question: &Vec<Question>, config: &Config) -> Response {
 							} else {
 								&zone.records.ns
 							};
+							
 							for ns in ns_records {
-								let mut name: Vec<u8> = vec![];
-								let labels: Vec<&str> = ns.name.split(".").collect();
-								for label in &labels {
-									name.push(label.len() as u8);
-									name.append(&mut label.as_bytes().to_vec());
-								}
-								name.push(0);
+								// add the NS to the response
 								answer.push(Resource {
 									rname: question.qname.clone(),
 									rtype: question.qtype,
 									rclass: question.qclass,
 									ttl: ns.ttl.as_secs() as u32,
-									rdata: name,
+									rdata: protocol::serialize_name(ns.name.split('.')),
 								});
 								
 								// lookup A and AAAA records for this to go in the additional section
-								let mut string_labels = vec![];
-								for label in &labels {
-									string_labels.push(label.to_string());
-								}
+								let string_labels: Vec<String> = ns.name.split('.').map(|label|label.to_string()).collect();
 								
 								// lookup A
 								if let Response::Ok(mut answer, _, _) = handle_dns(&vec![Question {
@@ -276,6 +247,7 @@ fn test_a() {
 				}],
 				aaaa: vec![],
 				ns: vec![],
+				cname: vec![],
 			},
 		}],
 	}), Response::Ok(vec![Resource {
@@ -305,6 +277,7 @@ fn test_a() {
 				}],
 				aaaa: vec![],
 				ns: vec![],
+				cname: vec![],
 			},
 		}],
 	}), Response::Ok(vec![Resource {
@@ -340,6 +313,7 @@ fn test_aaaa() {
 					ip6addr: "::1".parse().unwrap(),
 				}],
 				ns: vec![],
+				cname: vec![],
 			},
 		}],
 	}), Response::Ok(vec![Resource {
@@ -369,6 +343,7 @@ fn test_aaaa() {
 					ip6addr: "::3".parse().unwrap(),
 				}],
 				ns: vec![],
+				cname: vec![],
 			},
 		}],
 	}), Response::Ok(vec![Resource {

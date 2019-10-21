@@ -243,6 +243,7 @@ fn test_a() {
 				}],
 				aaaa: vec![],
 				ns: vec![],
+				cname: vec![],
 			},
 		}]
 	});
@@ -264,6 +265,7 @@ fn test_aaaa() {
 					ip6addr: "::1".parse().unwrap(),
 				}],
 				ns: vec![],
+				cname: vec![],
 			},
 		}]
 	});
