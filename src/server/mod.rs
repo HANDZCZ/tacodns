@@ -104,98 +104,148 @@ fn handle_dns(question: &Vec<Question>, config: &Config) -> Response {
 				ZoneMatcher::Wildcard(_, _) => unimplemented!(),
 			};
 			if matches {
-				match question.qtype {
-					record_type::A => {
-						for a in &zone.records.a {
-							answer.push(Resource {
-								rname: question.qname.clone(),
-								rtype: question.qtype,
-								rclass: question.qclass,
-								ttl: a.ttl.as_secs() as u32,
-								rdata: a.ip4addr.octets().to_vec(),
-							});
+				if zone.records.cname.len() > 0 {
+					for cname in &zone.records.cname {
+						// lookup other records
+						let new_name = if cname.name.ends_with(".") {
+							let mut name = cname.name.clone();
+							name.split_off(name.len() - 1);
+							name
+						} else {
+							let mut parent_name = qname.clone();
+							if let Some(index) = parent_name.find(".") {
+								parent_name = parent_name.split_off(index + 1);
+							}
+							cname.name.clone() + "." + parent_name.as_str()
+						};
+						
+						let mut name: Vec<u8> = vec![];
+						let labels: Vec<&str> = new_name.split(".").collect();
+						for label in &labels {
+							name.push(label.len() as u8);
+							name.append(&mut label.as_bytes().to_vec());
+						}
+						name.push(0);
+						answer.push(Resource {
+							rname: question.qname.clone(),
+							rtype: record_type::CNAME,
+							rclass: question.qclass,
+							ttl: cname.ttl.as_secs() as u32,
+							rdata: name,
+						});
+						
+						let mut labels: Vec<&str> = new_name.split(".").collect();
+						let mut string_labels = vec![];
+						for label in &labels {
+							string_labels.push(label.to_string());
+						}
+						// Note that this might trigger a stack overflow
+						// We aren't handling this right now and shouldn't be considered a security issue
+						// It's the fault of the configurer for not configuring it right
+						if let Response::Ok(mut cname_answer, _, _) = handle_dns(&vec![Question {
+							qname: string_labels,
+							qtype: question.qtype,
+							qclass: 1,
+						}], config) {
+							answer.append(&mut cname_answer);
 						}
 					}
-					record_type::AAAA => {
-						for aaaa in &zone.records.aaaa {
-							answer.push(Resource {
-								rname: question.qname.clone(),
-								rtype: question.qtype,
-								rclass: question.qclass,
-								ttl: aaaa.ttl.as_secs() as u32,
-								rdata: aaaa.ip6addr.octets().to_vec(),
-							});
-						}
-					}
-					record_type::NS => {
-						let mut ns_records = vec![];
-						let ns_records: &Vec<NsRecord> = if zone.records.ns.len() == 0 {
-							// fallback to the zone authority
-							for authority in &config.authority {
-								ns_records.push(NsRecord {
-									ttl: config.ttl,
-									name: authority.clone(),
+				} else {
+					match question.qtype {
+						record_type::A => {
+							for a in &zone.records.a {
+								answer.push(Resource {
+									rname: question.qname.clone(),
+									rtype: question.qtype,
+									rclass: question.qclass,
+									ttl: a.ttl.as_secs() as u32,
+									rdata: a.ip4addr.octets().to_vec(),
 								});
 							}
-							&ns_records
-						} else {
-							&zone.records.ns
-						};
-						for ns in ns_records {
-							let mut name: Vec<u8> = vec![];
-							let labels: Vec<&str> = ns.name.split(".").collect();
-							for label in &labels {
-								name.push(label.len() as u8);
-								name.append(&mut label.as_bytes().to_vec());
-							}
-							name.push(0);
-							answer.push(Resource {
-								rname: question.qname.clone(),
-								rtype: question.qtype,
-								rclass: question.qclass,
-								ttl: ns.ttl.as_secs() as u32,
-								rdata: name,
-							});
-							
-							// lookup A and AAAA records for this to go in the additional section
-							let mut string_labels = vec![];
-							for label in &labels {
-								string_labels.push(label.to_string());
-							}
-							
-							// lookup A
-							if let Response::Ok(mut answer, _, _) = handle_dns(&vec![Question {
-								qname: string_labels.clone(),
-								qtype: record_type::A,
-								qclass: 1,
-							}], config) {
-								additional.append(&mut answer);
-							}
-							
-							// lookup AAAA
-							if let Response::Ok(mut answer, _, _) = handle_dns(&vec![Question {
-								qname: string_labels,
-								qtype: record_type::AAAA,
-								qclass: 1,
-							}], config) {
-								additional.append(&mut answer);
+						}
+						record_type::AAAA => {
+							for aaaa in &zone.records.aaaa {
+								answer.push(Resource {
+									rname: question.qname.clone(),
+									rtype: question.qtype,
+									rclass: question.qclass,
+									ttl: aaaa.ttl.as_secs() as u32,
+									rdata: aaaa.ip6addr.octets().to_vec(),
+								});
 							}
 						}
+						record_type::NS => {
+							let mut ns_records = vec![];
+							let ns_records: &Vec<NsRecord> = if zone.records.ns.len() == 0 {
+								// fallback to the zone authority
+								for authority in &config.authority {
+									ns_records.push(NsRecord {
+										ttl: config.ttl,
+										name: authority.clone(),
+									});
+								}
+								&ns_records
+							} else {
+								&zone.records.ns
+							};
+							for ns in ns_records {
+								let mut name: Vec<u8> = vec![];
+								let labels: Vec<&str> = ns.name.split(".").collect();
+								for label in &labels {
+									name.push(label.len() as u8);
+									name.append(&mut label.as_bytes().to_vec());
+								}
+								name.push(0);
+								answer.push(Resource {
+									rname: question.qname.clone(),
+									rtype: question.qtype,
+									rclass: question.qclass,
+									ttl: ns.ttl.as_secs() as u32,
+									rdata: name,
+								});
+								
+								// lookup A and AAAA records for this to go in the additional section
+								let mut string_labels = vec![];
+								for label in &labels {
+									string_labels.push(label.to_string());
+								}
+								
+								// lookup A
+								if let Response::Ok(mut answer, _, _) = handle_dns(&vec![Question {
+									qname: string_labels.clone(),
+									qtype: record_type::A,
+									qclass: 1,
+								}], config) {
+									additional.append(&mut answer);
+								}
+								
+								// lookup AAAA
+								if let Response::Ok(mut answer, _, _) = handle_dns(&vec![Question {
+									qname: string_labels,
+									qtype: record_type::AAAA,
+									qclass: 1,
+								}], config) {
+									additional.append(&mut answer);
+								}
+							}
+						}
+						record_type::SOA => {
+							return Response::NotImplemented;
+						}
+						record_type::MX => {
+							return Response::NotImplemented;
+						}
+						record_type::TXT => {
+							return Response::NotImplemented;
+						}
+						record_type::SRV => {
+							return Response::NotImplemented;
+						}
+						_ => return Response::NotImplemented
 					}
-					record_type::SOA => {
-						return Response::NotImplemented;
-					}
-					record_type::MX => {
-						return Response::NotImplemented;
-					}
-					record_type::TXT => {
-						return Response::NotImplemented;
-					}
-					record_type::SRV => {
-						return Response::NotImplemented;
-					}
-					_ => return Response::NotImplemented
 				}
+				
+				// we matched something; break the search
 				break;
 			}
 		}

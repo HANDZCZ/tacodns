@@ -33,11 +33,18 @@ pub struct NsRecord {
 	pub name: String,
 }
 
+#[derive(Debug, PartialEq)]
+pub struct CnameRecord {
+	pub ttl: Duration,
+	pub name: String,
+}
+
 #[derive(Debug, Default, PartialEq)]
 pub struct Records {
 	pub a: Vec<ARecord>,
 	pub aaaa: Vec<AaaaRecord>,
 	pub ns: Vec<NsRecord>,
+	pub cname: Vec<CnameRecord>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -173,6 +180,16 @@ fn parse_zone_content(zone: &yaml::Hash, ttl: Duration) -> Records {
 						records.ns.push(NsRecord {
 							ttl,
 							name: nameserver,
+						});
+					}
+				}
+				"CNAME" => {
+					for entry in entries {
+						let (value, ttl) = extract_ttl(&entry, ttl);
+						let mut name = value.to_string();
+						records.cname.push(CnameRecord {
+							ttl,
+							name,
 						});
 					}
 				}
