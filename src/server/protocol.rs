@@ -2,8 +2,20 @@ extern crate byteorder;
 
 use std::io::{self, Cursor, Read, Seek, Write};
 use std::io::SeekFrom::Start;
+use std::net::{Ipv4Addr, Ipv6Addr};
 
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
+
+pub mod record_type {
+	pub const A: u16 = 1;
+	pub const NS: u16 = 2;
+	pub const CNAME: u16 = 5;
+	pub const SOA: u16 = 6;
+	pub const MX: u16 = 15;
+	pub const TXT: u16 = 16;
+	pub const AAAA: u16 = 28;
+	pub const SRV: u16 = 33;
+}
 
 #[derive(Debug, Default)]
 pub struct Header {
@@ -72,21 +84,41 @@ pub fn parse(buf: &[u8]) -> Message {
 	let additional_count = cursor.read_u16::<BigEndian>().unwrap();
 	//println!("additional_count: {:.unwrap()}", additional_count);
 	
+	fn parse_name(cursor: &mut Cursor<Vec<u8>>) -> Vec<String> {
+		let mut result = vec![];
+		
+		let mut label_cursor: &mut Cursor<Vec<u8>> = cursor;
+		let mut _label_cursor = Cursor::new(vec![]);
+		loop {
+			let label_size = label_cursor.read_u8().unwrap();
+			if label_size == 0 { break; }
+			
+			if label_size >> 6 == 3 {
+				// message compression: https://tools.ietf.org/html/rfc1035#section-4.1.4
+				let second_octet = label_cursor.read_u8().unwrap();
+				let offset = ((label_size as u16 & 0b00111111) << 8) | second_octet as u16;
+				_label_cursor = cursor.clone();
+				label_cursor = &mut _label_cursor;
+				label_cursor.seek(Start(offset as u64)).unwrap();
+				continue;
+			}
+			
+			let mut label_buf = vec![0u8; label_size as usize];
+			label_cursor.read_exact(label_buf.as_mut()).unwrap();
+			let label = String::from_utf8(label_buf)
+				.map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e)).unwrap();
+			result.push(label);
+		}
+		
+		return result;
+	}
+	
 	// question
 	message.question = Vec::with_capacity(question_count as usize);
 	for _ in 0..question_count {
 		let mut question: Question = Default::default();
 		
-		loop {
-			let label_size = cursor.read_u8().unwrap();
-			if label_size == 0 { break; }
-			
-			let mut label_buf = vec![0u8; label_size as usize];
-			cursor.read_exact(label_buf.as_mut()).unwrap();
-			let label = String::from_utf8(label_buf)
-				.map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e)).unwrap();
-			question.qname.push(label);
-		}
+		question.qname = parse_name(&mut cursor);
 		question.qtype = cursor.read_u16::<BigEndian>().unwrap();
 		question.qclass = cursor.read_u16::<BigEndian>().unwrap();
 		
@@ -99,38 +131,29 @@ pub fn parse(buf: &[u8]) -> Message {
 		for _ in 0..count {
 			let mut resource: Resource = Default::default();
 			
-			{
-				let mut label_cursor: &mut Cursor<Vec<u8>> = cursor;
-				let mut _label_cursor = Cursor::new(vec![]);
-				loop {
-					let label_size = label_cursor.read_u8().unwrap();
-					if label_size == 0 { break; }
-					
-					if label_size >> 6 == 3 {
-						// message compression: https://tools.ietf.org/html/rfc1035#section-4.1.4
-						let second_octet = label_cursor.read_u8().unwrap();
-						let offset = ((label_size as u16 & 0b00111111) << 8) | second_octet as u16;
-						_label_cursor = cursor.clone();
-						label_cursor = &mut _label_cursor;
-						label_cursor.seek(Start(offset as u64)).unwrap();
-						continue;
-					}
-					
-					let mut label_buf = vec![0u8; label_size as usize];
-					label_cursor.read_exact(label_buf.as_mut()).unwrap();
-					let label = String::from_utf8(label_buf)
-						.map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e)).unwrap();
-					resource.rname.push(label);
-				}
-			}
-			
+			resource.rname = parse_name(cursor);
 			resource.rtype = cursor.read_u16::<BigEndian>().unwrap();
 			resource.rclass = cursor.read_u16::<BigEndian>().unwrap();
 			resource.ttl = cursor.read_u32::<BigEndian>().unwrap();
 			
 			let rdata_len = cursor.read_u16::<BigEndian>().unwrap();
-			let mut rdata_buf = vec![0; rdata_len as usize];
-			cursor.read_exact(rdata_buf.as_mut()).unwrap();
+			let rdata_buf = match resource.rtype {
+				record_type::CNAME | record_type::NS => {
+					serialize_name(parse_name(cursor).iter().map(|label| label.as_str()))
+				}
+				record_type::MX => {
+					let mut rdata_buf = vec![];
+					rdata_buf.push(cursor.read_u8().unwrap());
+					rdata_buf.push(cursor.read_u8().unwrap());
+					rdata_buf.append(&mut serialize_name(parse_name(cursor).iter().map(|label| label.as_str())));
+					rdata_buf
+				}
+				_ => {
+					let mut rdata_buf = vec![0; rdata_len as usize];
+					cursor.read_exact(rdata_buf.as_mut()).unwrap();
+					rdata_buf
+				}
+			};
 			resource.rdata = rdata_buf;
 			
 			resources.push(resource);

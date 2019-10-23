@@ -9,20 +9,9 @@ use protocol::Resource;
 
 use crate::config::{AaaaRecord, ARecord, CnameRecord, Config, NsRecord, Records, Zone, ZoneMatcher};
 use crate::options::Options;
-use crate::server::protocol::{Message, Question};
+use crate::server::protocol::{Message, Question, record_type};
 
 mod protocol;
-
-mod record_type {
-	pub const A: u16 = 1;
-	pub const NS: u16 = 2;
-	pub const CNAME: u16 = 5;
-	pub const SOA: u16 = 6;
-	pub const MX: u16 = 15;
-	pub const TXT: u16 = 16;
-	pub const AAAA: u16 = 28;
-	pub const SRV: u16 = 33;
-}
 
 pub fn serve(options: Options, config: Config) {
 	let socket = UdpSocket::bind((options.listen_address, options.listen_port)).unwrap();
