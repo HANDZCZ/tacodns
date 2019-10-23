@@ -20,5 +20,5 @@ fn main() {
 	let config = config::parse(config_data.as_str());
 	if opts.verbose { println!("{:?}", config) }
 	
-	server::serve(&opts, &config);
+	server::serve(opts, config);
 }

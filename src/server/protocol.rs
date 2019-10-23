@@ -1,6 +1,7 @@
 extern crate byteorder;
 
-use std::io::{self, Cursor, Read, Write};
+use std::io::{self, Cursor, Read, Seek, Write};
+use std::io::SeekFrom::Start;
 
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 
@@ -46,13 +47,13 @@ pub struct Message {
 	pub additional: Vec<Resource>,
 }
 
-pub fn parse(buf: &[u8]) -> io::Result<Message> {
+pub fn parse(buf: &[u8]) -> Message {
 	let mut message: Message = Default::default();
 	let mut cursor = Cursor::new(buf.to_vec());
 	
 	let mut header = &mut message.header;
-	header.id = cursor.read_u16::<BigEndian>()?;
-	let flags = cursor.read_u16::<BigEndian>()?;
+	header.id = cursor.read_u16::<BigEndian>().unwrap();
+	let flags = cursor.read_u16::<BigEndian>().unwrap();
 	header.qr = flags >> 15 == 1;
 	header.opcode = (flags >> 11 & 0b1111) as u8;
 	header.aa = (flags >> 10 & 1) == 1;
@@ -62,14 +63,14 @@ pub fn parse(buf: &[u8]) -> io::Result<Message> {
 	header.z = (flags >> 4 & 0b111) as u8;
 	header.rcode = (flags & 0b1111) as u8;
 	
-	let question_count = cursor.read_u16::<BigEndian>()?;
-	//println!("question_count: {:?}", question_count);
-	let answer_count = cursor.read_u16::<BigEndian>()?;
-	//println!("answer_count: {:?}", answer_count);
-	let authority_count = cursor.read_u16::<BigEndian>()?;
-	//println!("authority_count: {:?}", authority_count);
-	let additional_count = cursor.read_u16::<BigEndian>()?;
-	//println!("additional_count: {:?}", additional_count);
+	let question_count = cursor.read_u16::<BigEndian>().unwrap();
+	//println!("question_count: {:.unwrap()}", question_count);
+	let answer_count = cursor.read_u16::<BigEndian>().unwrap();
+	//println!("answer_count: {:.unwrap()}", answer_count);
+	let authority_count = cursor.read_u16::<BigEndian>().unwrap();
+	//println!("authority_count: {:.unwrap()}", authority_count);
+	let additional_count = cursor.read_u16::<BigEndian>().unwrap();
+	//println!("additional_count: {:.unwrap()}", additional_count);
 	
 	// question
 	message.question = Vec::with_capacity(question_count as usize);
@@ -77,17 +78,17 @@ pub fn parse(buf: &[u8]) -> io::Result<Message> {
 		let mut question: Question = Default::default();
 		
 		loop {
-			let label_size = cursor.read_u8()?;
+			let label_size = cursor.read_u8().unwrap();
 			if label_size == 0 { break; }
 			
 			let mut label_buf = vec![0u8; label_size as usize];
-			cursor.read_exact(label_buf.as_mut())?;
+			cursor.read_exact(label_buf.as_mut()).unwrap();
 			let label = String::from_utf8(label_buf)
-				.map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+				.map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e)).unwrap();
 			question.qname.push(label);
 		}
-		question.qtype = cursor.read_u16::<BigEndian>()?;
-		question.qclass = cursor.read_u16::<BigEndian>()?;
+		question.qtype = cursor.read_u16::<BigEndian>().unwrap();
+		question.qclass = cursor.read_u16::<BigEndian>().unwrap();
 		
 		message.question.push(question);
 	}
@@ -98,35 +99,49 @@ pub fn parse(buf: &[u8]) -> io::Result<Message> {
 		for _ in 0..count {
 			let mut resource: Resource = Default::default();
 			
-			loop {
-				let label_size = cursor.read_u8()?;
-				if label_size == 0 { break; }
-				
-				let mut label_buf = vec![0u8; label_size as usize];
-				cursor.read_exact(label_buf.as_mut())?;
-				let label = String::from_utf8(label_buf)
-					.map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-				resource.rname.push(label);
+			{
+				let mut label_cursor: &mut Cursor<Vec<u8>> = cursor;
+				let mut _label_cursor = Cursor::new(vec![]);
+				loop {
+					let label_size = label_cursor.read_u8().unwrap();
+					if label_size == 0 { break; }
+					
+					if label_size >> 6 == 3 {
+						// message compression: https://tools.ietf.org/html/rfc1035#section-4.1.4
+						let second_octet = label_cursor.read_u8().unwrap();
+						let offset = ((label_size as u16 & 0b00111111) << 8) | second_octet as u16;
+						_label_cursor = cursor.clone();
+						label_cursor = &mut _label_cursor;
+						label_cursor.seek(Start(offset as u64)).unwrap();
+						continue;
+					}
+					
+					let mut label_buf = vec![0u8; label_size as usize];
+					label_cursor.read_exact(label_buf.as_mut()).unwrap();
+					let label = String::from_utf8(label_buf)
+						.map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e)).unwrap();
+					resource.rname.push(label);
+				}
 			}
 			
-			resource.rtype = cursor.read_u16::<BigEndian>()?;
-			resource.rclass = cursor.read_u16::<BigEndian>()?;
-			resource.ttl = cursor.read_u32::<BigEndian>()?;
+			resource.rtype = cursor.read_u16::<BigEndian>().unwrap();
+			resource.rclass = cursor.read_u16::<BigEndian>().unwrap();
+			resource.ttl = cursor.read_u32::<BigEndian>().unwrap();
 			
-			let rdata_len = cursor.read_u16::<BigEndian>()?;
+			let rdata_len = cursor.read_u16::<BigEndian>().unwrap();
 			let mut rdata_buf = vec![0; rdata_len as usize];
-			cursor.read_exact(rdata_buf.as_mut())?;
+			cursor.read_exact(rdata_buf.as_mut()).unwrap();
 			resource.rdata = rdata_buf;
 			
 			resources.push(resource);
 		}
 		return Ok(resources);
 	}
-	message.answer = read_resources(&mut cursor, answer_count)?;
-	message.authority = read_resources(&mut cursor, authority_count)?;
-	message.additional = read_resources(&mut cursor, additional_count)?;
+	message.answer = read_resources(&mut cursor, answer_count).unwrap();
+	message.authority = read_resources(&mut cursor, authority_count).unwrap();
+	message.additional = read_resources(&mut cursor, additional_count).unwrap();
 	
-	return Ok(message);
+	return message;
 }
 
 /// Takes a list of labels (e.g. `["google", "com"]`) and converts it into a binary format useful for rdata
@@ -182,4 +197,11 @@ pub fn serialize(message: &Message) -> Vec<u8> {
 	write_resources(&mut cursor, &message.additional);
 	
 	return cursor.into_inner();
+}
+
+pub fn make_message_from_question(question: Vec<Question>) -> Message {
+	let mut message = Message::default();
+	message.header.rd = true;
+	message.question = question;
+	return message;
 }

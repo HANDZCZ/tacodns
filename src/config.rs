@@ -7,7 +7,7 @@ use yaml_rust::{Yaml, yaml, YamlLoader};
 
 use crate::regex::Regex;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum ZoneMatcher {
 	Basic(String),
 	Regex(Regex),
@@ -15,45 +15,52 @@ pub enum ZoneMatcher {
 	Wildcard(Vec<String>, String),
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct ARecord {
 	pub ttl: Duration,
 	pub ip4addr: Ipv4Addr,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct AaaaRecord {
 	pub ttl: Duration,
 	pub ip6addr: Ipv6Addr,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct NsRecord {
 	pub ttl: Duration,
 	pub name: String,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct CnameRecord {
 	pub ttl: Duration,
 	pub name: String,
 }
 
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
+pub struct AnameRecord {
+	pub ttl: Duration,
+	pub name: String,
+}
+
+#[derive(Debug, Default, PartialEq, Clone)]
 pub struct Records {
 	pub a: Vec<ARecord>,
 	pub aaaa: Vec<AaaaRecord>,
 	pub ns: Vec<NsRecord>,
 	pub cname: Vec<CnameRecord>,
+	pub aname: Vec<AnameRecord>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct Zone {
 	pub matcher: ZoneMatcher,
 	pub records: Records,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct Config {
 	pub ttl: Duration,
 	pub authority: Vec<String>,
@@ -193,6 +200,16 @@ fn parse_zone_content(zone: &yaml::Hash, ttl: Duration) -> Records {
 						});
 					}
 				}
+				"ANAME" => {
+					for entry in entries {
+						let (value, ttl) = extract_ttl(&entry, ttl);
+						let mut name = value.to_string();
+						records.aname.push(AnameRecord {
+							ttl,
+							name,
+						});
+					}
+				}
 				_ => panic!("Unknown record type: {:?}", key),
 			}
 		} else {
@@ -244,6 +261,7 @@ fn test_a() {
 				aaaa: vec![],
 				ns: vec![],
 				cname: vec![],
+				aname: vec![],
 			},
 		}]
 	});
@@ -266,6 +284,7 @@ fn test_aaaa() {
 				}],
 				ns: vec![],
 				cname: vec![],
+				aname: vec![],
 			},
 		}]
 	});

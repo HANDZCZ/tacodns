@@ -3,7 +3,7 @@ extern crate regex;
 use std::ops::Deref;
 
 /// Because regex::Regex doesn't support trait PartialEq, we implement that in this file
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Regex(regex::Regex);
 
 impl Regex {
