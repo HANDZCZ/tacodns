@@ -1,6 +1,8 @@
 extern crate yaml_rust;
 
+use std::hash::Hash;
 use std::net::{Ipv4Addr, Ipv6Addr};
+use std::slice::SliceIndex;
 use std::time::Duration;
 
 use yaml_rust::{Yaml, yaml, YamlLoader};
@@ -45,6 +47,13 @@ pub struct AnameRecord {
 	pub name: String,
 }
 
+#[derive(Debug, PartialEq, Clone)]
+pub struct MxRecord {
+	pub ttl: Duration,
+	pub priority: u16,
+	pub host: String,
+}
+
 #[derive(Debug, Default, PartialEq, Clone)]
 pub struct Records {
 	pub a: Vec<ARecord>,
@@ -52,6 +61,7 @@ pub struct Records {
 	pub ns: Vec<NsRecord>,
 	pub cname: Vec<CnameRecord>,
 	pub aname: Vec<AnameRecord>,
+	pub mx: Vec<MxRecord>,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -210,6 +220,37 @@ fn parse_zone_content(zone: &yaml::Hash, ttl: Duration) -> Records {
 						});
 					}
 				}
+				"MX" => {
+					for entry in entries {
+						match &entry {
+							Yaml::String(string) => {
+								let (value, ttl) = extract_ttl(&entry, ttl);
+								records.mx.push(MxRecord {
+									ttl,
+									priority: 10,
+									host: value.to_string(),
+								});
+							}
+							Yaml::Hash(hash) => {
+								fn _ttl(hash: &yaml::Hash) -> Option<Duration> {
+									Some(Duration::from_yaml(hash.get(&Yaml::String("ttl".to_string()))?))
+								}
+								let ttl = _ttl(&hash).unwrap_or(ttl);
+								fn _priority(hash: &yaml::Hash) -> Option<i64> {
+									Some(hash.get(&Yaml::String("priority".to_string()))?.as_i64().expect("Expected priority to be of type integer."))
+								}
+								let priority = _priority(&hash).unwrap_or(10);
+								let host = hash.get(&Yaml::String("host".to_string())).expect("Expected host field.").as_str().expect("Expected host field to be a string.");
+								records.mx.push(MxRecord {
+									ttl,
+									priority: priority as u16,
+									host: host.to_string(),
+								});
+							}
+							_ => panic!("Expected String, Array, or Hash: {:?}", entry),
+						}
+					}
+				}
 				_ => panic!("Unknown record type: {:?}", key),
 			}
 		} else {
@@ -262,8 +303,9 @@ fn test_a() {
 				ns: vec![],
 				cname: vec![],
 				aname: vec![],
+				mx: vec![],
 			},
-		}]
+		}],
 	});
 }
 
@@ -285,7 +327,8 @@ fn test_aaaa() {
 				ns: vec![],
 				cname: vec![],
 				aname: vec![],
+				mx: vec![],
 			},
-		}]
+		}],
 	});
 }

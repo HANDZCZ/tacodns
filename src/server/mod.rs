@@ -69,6 +69,19 @@ enum Response {
 }
 
 fn rewrite_xname(xname_destination: &str, qname: &str) -> String {
+	// TODO perhaps this isn't the best way to operate here
+	// rather than using the regular "if it ends with a dot, make it absolute" scheme, perhaps we make our own syntax?
+	// example.com:
+	//   MX: mail.example.com
+	//   MX: .mail 
+	// www.example.com:
+	//   CNAME: example.com
+	//   CNAME: ..
+	// www2.example.com:
+	//   CNAME: www.example.com
+	//   CNAME: ..www
+	// mail.example.com:
+	
 	// generate the full name this maps to, with the trailing dot removed
 	if xname_destination.ends_with(".") {
 		// CNAME is absolute
@@ -273,7 +286,19 @@ fn handle_dns(question: &Vec<Question>, options: &Options, config: &Config) -> R
 					
 					// MX
 					record_type::MX => {
-						return Response::NotImplemented;
+						for mx in &zone.records.mx {
+							let mut rdata: Vec<u8> = vec![];
+							rdata.push((mx.priority >> 8) as u8);
+							rdata.push(mx.priority as u8);
+							rdata.append(&mut protocol::serialize_name(mx.host.split(".")));
+							answer.push(Resource {
+								rname: question.qname.clone(),
+								rtype: question.qtype,
+								rclass: question.qclass,
+								ttl: mx.ttl.as_secs() as u32,
+								rdata,
+							});
+						}
 					}
 					
 					// TXT
@@ -335,6 +360,7 @@ fn test_a() {
 				ns: vec![],
 				cname: vec![],
 				aname: vec![],
+				mx: vec![],
 			},
 		}],
 	}), Response::Ok(vec![Resource {
@@ -366,6 +392,7 @@ fn test_a() {
 				ns: vec![],
 				cname: vec![],
 				aname: vec![],
+				mx: vec![],
 			},
 		}],
 	}), Response::Ok(vec![Resource {
@@ -403,6 +430,7 @@ fn test_aaaa() {
 				ns: vec![],
 				cname: vec![],
 				aname: vec![],
+				mx: vec![],
 			},
 		}],
 	}), Response::Ok(vec![Resource {
@@ -434,6 +462,7 @@ fn test_aaaa() {
 				ns: vec![],
 				cname: vec![],
 				aname: vec![],
+				mx: vec![],
 			},
 		}],
 	}), Response::Ok(vec![Resource {
@@ -482,6 +511,7 @@ fn test_cname() {
 				ns: vec![],
 				cname: vec![],
 				aname: vec![],
+				mx: vec![],
 			},
 		}, Zone {
 			matcher: ZoneMatcher::Basic("www.example.com".to_string()),
@@ -494,6 +524,7 @@ fn test_cname() {
 					name: "example.com.".to_string(),
 				}],
 				aname: vec![],
+				mx: vec![],
 			},
 		}],
 	}), Response::Ok(vec![Resource {
@@ -528,6 +559,7 @@ fn test_cname() {
 				ns: vec![],
 				cname: vec![],
 				aname: vec![],
+				mx: vec![],
 			},
 		}, Zone {
 			matcher: ZoneMatcher::Basic("www.example.com".to_string()),
@@ -540,6 +572,7 @@ fn test_cname() {
 					name: "example.com.".to_string(),
 				}],
 				aname: vec![],
+				mx: vec![],
 			},
 		}, Zone {
 			matcher: ZoneMatcher::Basic("www2.example.com".to_string()),
@@ -552,6 +585,7 @@ fn test_cname() {
 					name: "www".to_string(),
 				}],
 				aname: vec![],
+				mx: vec![],
 			},
 		}],
 	}), Response::Ok(vec![Resource {
