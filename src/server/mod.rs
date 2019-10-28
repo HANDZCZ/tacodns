@@ -7,7 +7,7 @@ use threadpool::ThreadPool;
 
 use protocol::Resource;
 
-use crate::config::{AaaaRecord, ARecord, CnameRecord, Config, NsRecord, Records, Zone, ZoneMatcher};
+use crate::config::{AaaaRecord, ARecord, CnameRecord, Config, MxRecord, NsRecord, Records, Zone, ZoneMatcher};
 use crate::options::Options;
 use crate::server::protocol::{Message, Question, record_type};
 
@@ -135,7 +135,7 @@ fn handle_dns(question: &Vec<Question>, options: &Options, config: &Config) -> R
 			if matches {
 				match question.qtype {
 					// CNAME
-					_ if zone.records.cname.len() > 0 => {
+					_ if !zone.records.cname.is_empty() => {
 						for cname in &zone.records.cname {
 							let new_name = rewrite_xname(cname.name.as_str(), qname.as_str());
 							
@@ -172,7 +172,7 @@ fn handle_dns(question: &Vec<Question>, options: &Options, config: &Config) -> R
 					}
 					
 					// ANAME
-					record_type::A | record_type::AAAA if zone.records.aname.len() > 0 => {
+					record_type::A | record_type::AAAA if !zone.records.aname.is_empty() => {
 						for aname in &zone.records.aname {
 							let new_name = rewrite_xname(aname.name.as_str(), qname.as_str());
 							
@@ -234,7 +234,7 @@ fn handle_dns(question: &Vec<Question>, options: &Options, config: &Config) -> R
 						let mut ns_records = vec![]; // this needs to be out here to fix a ownership issue
 						
 						// if this zone doesn't have any NS records, inherit from the top-level zone authority
-						let ns_records: &Vec<NsRecord> = if zone.records.ns.len() == 0 {
+						let ns_records: &Vec<NsRecord> = if zone.records.ns.is_empty() {
 							for authority in &config.authority {
 								ns_records.push(NsRecord {
 									ttl: config.ttl,
@@ -328,283 +328,325 @@ fn handle_dns(question: &Vec<Question>, options: &Options, config: &Config) -> R
 }
 
 #[cfg(test)]
-fn test_options() -> Options {
-	Options {
-		listen_address: "127.0.0.1".parse().unwrap(),
-		listen_port: 0,
-		verbose: false,
-		config: "".to_string(),
-		config_env: None,
-		threads: 0,
-		resolver: "127.0.0.53:53".parse().unwrap(),
+mod test {
+	use std::time::Duration;
+	
+	use crate::config::{AaaaRecord, ARecord, CnameRecord, Config, MxRecord, Records, Zone, ZoneMatcher};
+	use crate::options::Options;
+	use crate::server::{handle_dns, Response, rewrite_xname};
+	use crate::server::protocol::{Question, record_type, Resource};
+	
+	fn test_options() -> Options {
+		Options {
+			listen_address: "127.0.0.1".parse().unwrap(),
+			listen_port: 0,
+			verbose: false,
+			config: "".to_string(),
+			config_env: None,
+			threads: 0,
+			resolver: "127.0.0.53:53".parse().unwrap(),
+		}
 	}
-}
-
-#[test]
-fn test_a() {
-	assert_eq!(handle_dns(&vec![Question {
-		qname: vec!["example".to_string(), "com".to_string()],
-		qtype: record_type::A,
-		qclass: 1,
-	}], &test_options(), &Config {
-		ttl: Duration::from_secs(1800),
-		authority: vec![],
-		zones: vec![Zone {
-			matcher: ZoneMatcher::Basic("example.com".to_string()),
-			records: Records {
-				a: vec![ARecord {
-					ttl: Duration::from_secs(100),
-					ip4addr: "10.10.10.10".parse().unwrap(),
-				}],
-				aaaa: vec![],
-				ns: vec![],
-				cname: vec![],
-				aname: vec![],
-				mx: vec![],
-			},
-		}],
-	}), Response::Ok(vec![Resource {
-		rname: vec!["example".to_string(), "com".to_string()],
-		rtype: record_type::A,
-		rclass: 1,
-		ttl: 100,
-		rdata: vec![10, 10, 10, 10],
-	}], vec![], vec![]));
 	
-	assert_eq!(handle_dns(&vec![Question {
-		qname: vec!["example".to_string(), "com".to_string()],
-		qtype: record_type::A,
-		qclass: 1,
-	}], &test_options(), &Config {
-		ttl: Duration::from_secs(1800),
-		authority: vec![],
-		zones: vec![Zone {
-			matcher: ZoneMatcher::Basic("example.com".to_string()),
-			records: Records {
-				a: vec![ARecord {
-					ttl: Duration::from_secs(100),
-					ip4addr: "10.10.10.10".parse().unwrap(),
-				}, ARecord {
-					ttl: Duration::from_secs(100),
-					ip4addr: "11.11.11.11".parse().unwrap(),
-				}],
-				aaaa: vec![],
-				ns: vec![],
-				cname: vec![],
-				aname: vec![],
-				mx: vec![],
-			},
-		}],
-	}), Response::Ok(vec![Resource {
-		rname: vec!["example".to_string(), "com".to_string()],
-		rtype: record_type::A,
-		rclass: 1,
-		ttl: 100,
-		rdata: vec![10, 10, 10, 10],
-	}, Resource {
-		rname: vec!["example".to_string(), "com".to_string()],
-		rtype: record_type::A,
-		rclass: 1,
-		ttl: 100,
-		rdata: vec![11, 11, 11, 11],
-	}], vec![], vec![]));
-}
-
-#[test]
-fn test_aaaa() {
-	assert_eq!(handle_dns(&vec![Question {
-		qname: vec!["example".to_string(), "com".to_string()],
-		qtype: record_type::AAAA,
-		qclass: 1,
-	}], &test_options(), &Config {
-		ttl: Duration::from_secs(1800),
-		authority: vec![],
-		zones: vec![Zone {
-			matcher: ZoneMatcher::Basic("example.com".to_string()),
-			records: Records {
-				a: vec![],
-				aaaa: vec![AaaaRecord {
-					ttl: Duration::from_secs(100),
-					ip6addr: "::1".parse().unwrap(),
-				}],
-				ns: vec![],
-				cname: vec![],
-				aname: vec![],
-				mx: vec![],
-			},
-		}],
-	}), Response::Ok(vec![Resource {
-		rname: vec!["example".to_string(), "com".to_string()],
-		rtype: record_type::AAAA,
-		rclass: 1,
-		ttl: 100,
-		rdata: vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-	}], vec![], vec![]));
+	#[test]
+	fn test_a() {
+		assert_eq!(handle_dns(&vec![Question {
+			qname: vec!["example".to_string(), "com".to_string()],
+			qtype: record_type::A,
+			qclass: 1,
+		}], &test_options(), &Config {
+			ttl: Duration::from_secs(1800),
+			authority: vec![],
+			zones: vec![Zone {
+				matcher: ZoneMatcher::Basic("example.com".to_string()),
+				records: Records {
+					a: vec![ARecord {
+						ttl: Duration::from_secs(100),
+						ip4addr: "10.10.10.10".parse().unwrap(),
+					}],
+					aaaa: vec![],
+					ns: vec![],
+					cname: vec![],
+					aname: vec![],
+					mx: vec![],
+				},
+			}],
+		}), Response::Ok(vec![Resource {
+			rname: vec!["example".to_string(), "com".to_string()],
+			rtype: record_type::A,
+			rclass: 1,
+			ttl: 100,
+			rdata: vec![10, 10, 10, 10],
+		}], vec![], vec![]));
+		
+		assert_eq!(handle_dns(&vec![Question {
+			qname: vec!["example".to_string(), "com".to_string()],
+			qtype: record_type::A,
+			qclass: 1,
+		}], &test_options(), &Config {
+			ttl: Duration::from_secs(1800),
+			authority: vec![],
+			zones: vec![Zone {
+				matcher: ZoneMatcher::Basic("example.com".to_string()),
+				records: Records {
+					a: vec![ARecord {
+						ttl: Duration::from_secs(100),
+						ip4addr: "10.10.10.10".parse().unwrap(),
+					}, ARecord {
+						ttl: Duration::from_secs(100),
+						ip4addr: "11.11.11.11".parse().unwrap(),
+					}],
+					aaaa: vec![],
+					ns: vec![],
+					cname: vec![],
+					aname: vec![],
+					mx: vec![],
+				},
+			}],
+		}), Response::Ok(vec![Resource {
+			rname: vec!["example".to_string(), "com".to_string()],
+			rtype: record_type::A,
+			rclass: 1,
+			ttl: 100,
+			rdata: vec![10, 10, 10, 10],
+		}, Resource {
+			rname: vec!["example".to_string(), "com".to_string()],
+			rtype: record_type::A,
+			rclass: 1,
+			ttl: 100,
+			rdata: vec![11, 11, 11, 11],
+		}], vec![], vec![]));
+	}
 	
-	assert_eq!(handle_dns(&vec![Question {
-		qname: vec!["example".to_string(), "com".to_string()],
-		qtype: record_type::AAAA,
-		qclass: 1,
-	}], &test_options(), &Config {
-		ttl: Duration::from_secs(1800),
-		authority: vec![],
-		zones: vec![Zone {
-			matcher: ZoneMatcher::Basic("example.com".to_string()),
-			records: Records {
-				a: vec![],
-				aaaa: vec![AaaaRecord {
-					ttl: Duration::from_secs(100),
-					ip6addr: "::2".parse().unwrap(),
-				}, AaaaRecord {
-					ttl: Duration::from_secs(100),
-					ip6addr: "::3".parse().unwrap(),
-				}],
-				ns: vec![],
-				cname: vec![],
-				aname: vec![],
-				mx: vec![],
-			},
-		}],
-	}), Response::Ok(vec![Resource {
-		rname: vec!["example".to_string(), "com".to_string()],
-		rtype: record_type::AAAA,
-		rclass: 1,
-		ttl: 100,
-		rdata: vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2],
-	}, Resource {
-		rname: vec!["example".to_string(), "com".to_string()],
-		rtype: record_type::AAAA,
-		rclass: 1,
-		ttl: 100,
-		rdata: vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3],
-	}], vec![], vec![]));
-}
-
-#[test]
-fn test_rewrite_xname() {
-	// Q: www2.example.com
-	// www2.example.com CNAME www.example.com.
-	assert_eq!(rewrite_xname("www.example.com.", "www2.example.com"), "www.example.com");
+	#[test]
+	fn test_aaaa() {
+		assert_eq!(handle_dns(&vec![Question {
+			qname: vec!["example".to_string(), "com".to_string()],
+			qtype: record_type::AAAA,
+			qclass: 1,
+		}], &test_options(), &Config {
+			ttl: Duration::from_secs(1800),
+			authority: vec![],
+			zones: vec![Zone {
+				matcher: ZoneMatcher::Basic("example.com".to_string()),
+				records: Records {
+					a: vec![],
+					aaaa: vec![AaaaRecord {
+						ttl: Duration::from_secs(100),
+						ip6addr: "::1".parse().unwrap(),
+					}],
+					ns: vec![],
+					cname: vec![],
+					aname: vec![],
+					mx: vec![],
+				},
+			}],
+		}), Response::Ok(vec![Resource {
+			rname: vec!["example".to_string(), "com".to_string()],
+			rtype: record_type::AAAA,
+			rclass: 1,
+			ttl: 100,
+			rdata: vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+		}], vec![], vec![]));
+		
+		assert_eq!(handle_dns(&vec![Question {
+			qname: vec!["example".to_string(), "com".to_string()],
+			qtype: record_type::AAAA,
+			qclass: 1,
+		}], &test_options(), &Config {
+			ttl: Duration::from_secs(1800),
+			authority: vec![],
+			zones: vec![Zone {
+				matcher: ZoneMatcher::Basic("example.com".to_string()),
+				records: Records {
+					a: vec![],
+					aaaa: vec![AaaaRecord {
+						ttl: Duration::from_secs(100),
+						ip6addr: "::2".parse().unwrap(),
+					}, AaaaRecord {
+						ttl: Duration::from_secs(100),
+						ip6addr: "::3".parse().unwrap(),
+					}],
+					ns: vec![],
+					cname: vec![],
+					aname: vec![],
+					mx: vec![],
+				},
+			}],
+		}), Response::Ok(vec![Resource {
+			rname: vec!["example".to_string(), "com".to_string()],
+			rtype: record_type::AAAA,
+			rclass: 1,
+			ttl: 100,
+			rdata: vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2],
+		}, Resource {
+			rname: vec!["example".to_string(), "com".to_string()],
+			rtype: record_type::AAAA,
+			rclass: 1,
+			ttl: 100,
+			rdata: vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3],
+		}], vec![], vec![]));
+	}
 	
-	// Q: www2.example.com
-	// www2.example.com CNAME www
-	assert_eq!(rewrite_xname("www", "www2.example.com"), "www.example.com");
-}
-
-#[test]
-fn test_cname() {
-	assert_eq!(handle_dns(&vec![Question {
-		qname: vec!["www".to_string(), "example".to_string(), "com".to_string()],
-		qtype: record_type::A,
-		qclass: 1,
-	}], &test_options(), &Config {
-		ttl: Duration::from_secs(1800),
-		authority: vec![],
-		zones: vec![Zone {
-			matcher: ZoneMatcher::Basic("example.com".to_string()),
-			records: Records {
-				a: vec![ARecord {
-					ttl: Duration::from_secs(100),
-					ip4addr: "127.0.0.1".parse().unwrap(),
-				}],
-				aaaa: vec![],
-				ns: vec![],
-				cname: vec![],
-				aname: vec![],
-				mx: vec![],
-			},
-		}, Zone {
-			matcher: ZoneMatcher::Basic("www.example.com".to_string()),
-			records: Records {
-				a: vec![],
-				aaaa: vec![],
-				ns: vec![],
-				cname: vec![CnameRecord {
-					ttl: Duration::from_secs(100),
-					name: "example.com.".to_string(),
-				}],
-				aname: vec![],
-				mx: vec![],
-			},
-		}],
-	}), Response::Ok(vec![Resource {
-		rname: vec!["www".to_string(), "example".to_string(), "com".to_string()],
-		rtype: record_type::CNAME,
-		rclass: 1,
-		ttl: 100,
-		rdata: vec![7, 'e' as u8, 'x' as u8, 'a' as u8, 'm' as u8, 'p' as u8, 'l' as u8, 'e' as u8, 3, 'c' as u8, 'o' as u8, 'm' as u8, 0],
-	}, Resource {
-		rname: vec!["example".to_string(), "com".to_string()],
-		rtype: record_type::A,
-		rclass: 1,
-		ttl: 100,
-		rdata: vec![127, 0, 0, 1],
-	}], vec![], vec![]));
+	#[test]
+	fn test_rewrite_xname() {
+		// Q: www2.example.com
+		// www2.example.com CNAME www.example.com.
+		assert_eq!(rewrite_xname("www.example.com.", "www2.example.com"), "www.example.com");
+		
+		// Q: www2.example.com
+		// www2.example.com CNAME www
+		assert_eq!(rewrite_xname("www", "www2.example.com"), "www.example.com");
+	}
 	
-	assert_eq!(handle_dns(&vec![Question {
-		qname: vec!["www2".to_string(), "example".to_string(), "com".to_string()],
-		qtype: record_type::A,
-		qclass: 1,
-	}], &test_options(), &Config {
-		ttl: Duration::from_secs(1800),
-		authority: vec![],
-		zones: vec![Zone {
-			matcher: ZoneMatcher::Basic("example.com".to_string()),
-			records: Records {
-				a: vec![ARecord {
-					ttl: Duration::from_secs(100),
-					ip4addr: "127.0.0.1".parse().unwrap(),
-				}],
-				aaaa: vec![],
-				ns: vec![],
-				cname: vec![],
-				aname: vec![],
-				mx: vec![],
-			},
-		}, Zone {
-			matcher: ZoneMatcher::Basic("www.example.com".to_string()),
-			records: Records {
-				a: vec![],
-				aaaa: vec![],
-				ns: vec![],
-				cname: vec![CnameRecord {
-					ttl: Duration::from_secs(100),
-					name: "example.com.".to_string(),
-				}],
-				aname: vec![],
-				mx: vec![],
-			},
-		}, Zone {
-			matcher: ZoneMatcher::Basic("www2.example.com".to_string()),
-			records: Records {
-				a: vec![],
-				aaaa: vec![],
-				ns: vec![],
-				cname: vec![CnameRecord {
-					ttl: Duration::from_secs(100),
-					name: "www".to_string(),
-				}],
-				aname: vec![],
-				mx: vec![],
-			},
-		}],
-	}), Response::Ok(vec![Resource {
-		rname: vec!["www2".to_string(), "example".to_string(), "com".to_string()],
-		rtype: record_type::CNAME,
-		rclass: 1,
-		ttl: 100,
-		rdata: vec![3, 'w' as u8, 'w' as u8, 'w' as u8, 7, 'e' as u8, 'x' as u8, 'a' as u8, 'm' as u8, 'p' as u8, 'l' as u8, 'e' as u8, 3, 'c' as u8, 'o' as u8, 'm' as u8, 0],
-	}, Resource {
-		rname: vec!["www".to_string(), "example".to_string(), "com".to_string()],
-		rtype: record_type::CNAME,
-		rclass: 1,
-		ttl: 100,
-		rdata: vec![7, 'e' as u8, 'x' as u8, 'a' as u8, 'm' as u8, 'p' as u8, 'l' as u8, 'e' as u8, 3, 'c' as u8, 'o' as u8, 'm' as u8, 0],
-	}, Resource {
-		rname: vec!["example".to_string(), "com".to_string()],
-		rtype: record_type::A,
-		rclass: 1,
-		ttl: 100,
-		rdata: vec![127, 0, 0, 1],
-	}], vec![], vec![]));
+	#[test]
+	fn test_cname() {
+		assert_eq!(handle_dns(&vec![Question {
+			qname: vec!["www".to_string(), "example".to_string(), "com".to_string()],
+			qtype: record_type::A,
+			qclass: 1,
+		}], &test_options(), &Config {
+			ttl: Duration::from_secs(1800),
+			authority: vec![],
+			zones: vec![Zone {
+				matcher: ZoneMatcher::Basic("example.com".to_string()),
+				records: Records {
+					a: vec![ARecord {
+						ttl: Duration::from_secs(100),
+						ip4addr: "127.0.0.1".parse().unwrap(),
+					}],
+					aaaa: vec![],
+					ns: vec![],
+					cname: vec![],
+					aname: vec![],
+					mx: vec![],
+				},
+			}, Zone {
+				matcher: ZoneMatcher::Basic("www.example.com".to_string()),
+				records: Records {
+					a: vec![],
+					aaaa: vec![],
+					ns: vec![],
+					cname: vec![CnameRecord {
+						ttl: Duration::from_secs(100),
+						name: "example.com.".to_string(),
+					}],
+					aname: vec![],
+					mx: vec![],
+				},
+			}],
+		}), Response::Ok(vec![Resource {
+			rname: vec!["www".to_string(), "example".to_string(), "com".to_string()],
+			rtype: record_type::CNAME,
+			rclass: 1,
+			ttl: 100,
+			rdata: vec![7, 'e' as u8, 'x' as u8, 'a' as u8, 'm' as u8, 'p' as u8, 'l' as u8, 'e' as u8, 3, 'c' as u8, 'o' as u8, 'm' as u8, 0],
+		}, Resource {
+			rname: vec!["example".to_string(), "com".to_string()],
+			rtype: record_type::A,
+			rclass: 1,
+			ttl: 100,
+			rdata: vec![127, 0, 0, 1],
+		}], vec![], vec![]));
+		
+		assert_eq!(handle_dns(&vec![Question {
+			qname: vec!["www2".to_string(), "example".to_string(), "com".to_string()],
+			qtype: record_type::A,
+			qclass: 1,
+		}], &test_options(), &Config {
+			ttl: Duration::from_secs(1800),
+			authority: vec![],
+			zones: vec![Zone {
+				matcher: ZoneMatcher::Basic("example.com".to_string()),
+				records: Records {
+					a: vec![ARecord {
+						ttl: Duration::from_secs(100),
+						ip4addr: "127.0.0.1".parse().unwrap(),
+					}],
+					aaaa: vec![],
+					ns: vec![],
+					cname: vec![],
+					aname: vec![],
+					mx: vec![],
+				},
+			}, Zone {
+				matcher: ZoneMatcher::Basic("www.example.com".to_string()),
+				records: Records {
+					a: vec![],
+					aaaa: vec![],
+					ns: vec![],
+					cname: vec![CnameRecord {
+						ttl: Duration::from_secs(100),
+						name: "example.com.".to_string(),
+					}],
+					aname: vec![],
+					mx: vec![],
+				},
+			}, Zone {
+				matcher: ZoneMatcher::Basic("www2.example.com".to_string()),
+				records: Records {
+					a: vec![],
+					aaaa: vec![],
+					ns: vec![],
+					cname: vec![CnameRecord {
+						ttl: Duration::from_secs(100),
+						name: "www".to_string(),
+					}],
+					aname: vec![],
+					mx: vec![],
+				},
+			}],
+		}), Response::Ok(vec![Resource {
+			rname: vec!["www2".to_string(), "example".to_string(), "com".to_string()],
+			rtype: record_type::CNAME,
+			rclass: 1,
+			ttl: 100,
+			rdata: vec![3, 'w' as u8, 'w' as u8, 'w' as u8, 7, 'e' as u8, 'x' as u8, 'a' as u8, 'm' as u8, 'p' as u8, 'l' as u8, 'e' as u8, 3, 'c' as u8, 'o' as u8, 'm' as u8, 0],
+		}, Resource {
+			rname: vec!["www".to_string(), "example".to_string(), "com".to_string()],
+			rtype: record_type::CNAME,
+			rclass: 1,
+			ttl: 100,
+			rdata: vec![7, 'e' as u8, 'x' as u8, 'a' as u8, 'm' as u8, 'p' as u8, 'l' as u8, 'e' as u8, 3, 'c' as u8, 'o' as u8, 'm' as u8, 0],
+		}, Resource {
+			rname: vec!["example".to_string(), "com".to_string()],
+			rtype: record_type::A,
+			rclass: 1,
+			ttl: 100,
+			rdata: vec![127, 0, 0, 1],
+		}], vec![], vec![]));
+	}
+	
+	#[test]
+	fn test_mx() {
+		assert_eq!(handle_dns(&vec![Question {
+			qname: vec!["example".to_string(), "com".to_string()],
+			qtype: record_type::MX,
+			qclass: 1,
+		}], &test_options(), &Config {
+			ttl: Duration::from_secs(1800),
+			authority: vec![],
+			zones: vec![Zone {
+				matcher: ZoneMatcher::Basic("example.com".to_string()),
+				records: Records {
+					a: vec![],
+					aaaa: vec![],
+					ns: vec![],
+					cname: vec![],
+					aname: vec![],
+					mx: vec![MxRecord {
+						ttl: Duration::from_secs(100),
+						priority: 10,
+						host: "mail.example.com".to_string(),
+					}],
+				},
+			}],
+		}), Response::Ok(vec![Resource {
+			rname: vec!["example".to_string(), "com".to_string()],
+			rtype: record_type::MX,
+			rclass: 1,
+			ttl: 100,
+			rdata: vec![0, 10, 4, 'm' as u8, 'a' as u8, 'i' as u8, 'l' as u8, 7, 'e' as u8, 'x' as u8, 'a' as u8, 'm' as u8, 'p' as u8, 'l' as u8, 'e' as u8, 3, 'c' as u8, 'o' as u8, 'm' as u8, 0],
+		}], vec![], vec![]));
+	}
 }
