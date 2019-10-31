@@ -2,7 +2,6 @@ extern crate byteorder;
 
 use std::io::{self, Cursor, Read, Seek, Write};
 use std::io::SeekFrom::Start;
-use std::net::{Ipv4Addr, Ipv6Addr};
 
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 

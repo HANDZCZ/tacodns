@@ -1,15 +1,15 @@
 use std::io::{Read, Write};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream, UdpSocket};
-use std::time::{Duration, Instant};
+use std::net::{SocketAddr, TcpStream, UdpSocket};
+use std::time::Instant;
 
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use threadpool::ThreadPool;
 
 use protocol::Resource;
 
-use crate::config::{AaaaRecord, ARecord, CnameRecord, Config, Label, MxRecord, NsRecord, Records, Zone, ZoneMatcher};
+use crate::config::{Config, Label, NsRecord, ZoneMatcher};
 use crate::options::Options;
-use crate::server::protocol::{Message, Question, record_type};
+use crate::server::protocol::{Question, record_type};
 
 mod protocol;
 
@@ -61,10 +61,12 @@ pub fn serve(options: Options, config: Config) {
 #[derive(Debug, PartialEq)]
 enum Response {
 	Ok(Vec<Resource>, Vec<Resource>, Vec<Resource>),
+	#[allow(dead_code)]
 	FormatError,
 	ServerFailure,
 	NameError,
 	NotImplemented,
+	#[allow(dead_code)]
 	Refused,
 }
 
@@ -110,7 +112,7 @@ fn resolver_lookup(question: Vec<Question>, server: SocketAddr) -> Response {
 			let mut buffer: Vec<u8> = vec![0; message_size as usize];
 			stream.read(buffer.as_mut_slice()).unwrap();
 			
-			let mut message = protocol::parse(buffer.as_slice());
+			let message = protocol::parse(buffer.as_slice());
 			return Response::Ok(message.answer, message.authority, message.additional);
 		}
 	}
@@ -120,7 +122,6 @@ fn does_match(matchers: &[ZoneMatcher], qname: &[String]) -> bool {
 	'matcher: for zone_matcher in matchers {
 		let mut qname = qname.iter().rev().peekable();
 		'label: for label in zone_matcher.iter().rev() {
-			
 			match label {
 				Label::Basic(string) => {
 					// if this label doesn't match exactly
@@ -220,7 +221,7 @@ fn does_match(matchers: &[ZoneMatcher], qname: &[String]) -> bool {
 
 fn handle_dns(question: &Vec<Question>, options: &Options, config: &Config) -> Response {
 	let mut answer: Vec<Resource> = Vec::new();
-	let mut authority: Vec<Resource> = Vec::new();
+	let authority: Vec<Resource> = Vec::new(); // may be made `mut` in the future
 	let mut additional: Vec<Resource> = Vec::new();
 	
 	for question in question {
@@ -284,7 +285,7 @@ fn handle_dns(question: &Vec<Question>, options: &Options, config: &Config) -> R
 							match handle_dns(&question, options, config) {
 								Response::Ok(mut cname_answer, _, _) => answer.append(&mut cname_answer),
 								Response::NameError => {
-									if let Response::Ok(mut aname_answer, _, _) = resolver_lookup(question, options.resolver) {
+									if let Response::Ok(aname_answer, _, _) = resolver_lookup(question, options.resolver) {
 										let qname_split: Vec<String> = qname.split(".").map(|label| label.to_string()).collect();
 										for mut resource in aname_answer {
 											resource.rname = qname_split.clone();
@@ -427,7 +428,7 @@ fn handle_dns(question: &Vec<Question>, options: &Options, config: &Config) -> R
 mod test {
 	use std::time::Duration;
 	
-	use crate::config::{AaaaRecord, ARecord, CnameRecord, Config, Label, MxRecord, Records, Zone, ZoneMatcher};
+	use crate::config::{AaaaRecord, ARecord, CnameRecord, Config, Label, MxRecord, Records, Zone};
 	use crate::options::Options;
 	use crate::regex::Regex;
 	use crate::server::{does_match, handle_dns, Response, rewrite_xname};

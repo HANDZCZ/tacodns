@@ -1,15 +1,6 @@
-use std::str::FromStr;
 use std::time::Duration;
 
-use nom::bytes::complete::{take_while, take_while1};
-use nom::character::{is_alphabetic, is_digit};
-use nom::IResult;
-
-use crate::config::FromTime;
 use crate::regex::Regex;
-
-use super::yaml_rust::Yaml;
-use super::yaml_rust::yaml::Yaml::Integer;
 
 #[derive(Clone, Copy, PartialEq, PartialOrd, Eq, Ord, Debug, Hash)]
 pub struct NotATtlError;

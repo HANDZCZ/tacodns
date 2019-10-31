@@ -1,18 +1,14 @@
 extern crate yaml_rust;
 
-use std::hash::Hash;
 use std::net::{Ipv4Addr, Ipv6Addr};
-use std::slice::SliceIndex;
 use std::time::Duration;
 
-use nom::{IResult, ParseTo};
 use nom::branch::alt;
-use nom::bytes::complete::{escaped, is_not, tag, take, take_till, take_while, take_while1, take_while_m_n};
-use nom::character::{is_alphabetic, is_digit};
-use nom::character::complete::{alpha0, alpha1, digit1, none_of, one_of};
-use nom::combinator::{complete, opt};
+use nom::bytes::complete::{escaped, tag, take, take_while_m_n};
+use nom::character::complete::none_of;
+use nom::IResult;
 use nom::multi::separated_list;
-use nom::sequence::{delimited, pair, preceded};
+use nom::sequence::delimited;
 use yaml_rust::{Yaml, yaml, YamlLoader};
 
 use crate::config::ttl::Parse;
@@ -180,7 +176,7 @@ fn parse_zones(yaml: &Yaml, default_ttl: Duration) -> Vec<Zone> {
 	let mut zones = Vec::new();
 	
 	for (key, value) in yaml {
-		let (content, ttl) = parse_value_ttl(key.expect_str(), DEFAULT_TTL);
+		let (content, ttl) = parse_value_ttl(key.expect_str(), default_ttl);
 		let zone_matchers = parse_zone_matchers(content.as_ref()).unwrap().1;
 		
 		let value = value.as_hash().expect(format!("Expected zone value to be mapping: {:?}", value).as_str());
@@ -256,20 +252,18 @@ fn parse_zone_content(zone: &yaml::Hash, ttl: Duration) -> Records {
 				"CNAME" => {
 					for entry in entries {
 						let (value, ttl) = parse_value_ttl(&entry.expect_str(), ttl);
-						let mut name = value.to_string();
 						records.cname.push(CnameRecord {
 							ttl,
-							name,
+							name: value.to_string(),
 						});
 					}
 				}
 				"ANAME" => {
 					for entry in entries {
 						let (value, ttl) = parse_value_ttl(&entry.expect_str(), ttl);
-						let mut name = value.to_string();
 						records.aname.push(AnameRecord {
 							ttl,
-							name,
+							name: value.to_string(),
 						});
 					}
 				}
@@ -277,7 +271,7 @@ fn parse_zone_content(zone: &yaml::Hash, ttl: Duration) -> Records {
 					for entry in entries {
 						match &entry {
 							Yaml::String(string) => {
-								let (value, ttl) = parse_value_ttl(&entry.expect_str(), ttl);
+								let (value, ttl) = parse_value_ttl(&string, ttl);
 								records.mx.push(MxRecord {
 									ttl,
 									priority: 10,
@@ -336,7 +330,7 @@ impl FromTime<Duration> for Duration {
 mod test {
 	use std::time::Duration;
 	
-	use crate::config::{AaaaRecord, ARecord, Config, DEFAULT_TTL, Label, parse, parse_allwildcard, parse_basic, parse_label, parse_regex, parse_subwildcard, parse_value_ttl, parse_wildcard, parse_zone_matcher, parse_zone_matchers, Records, Zone};
+	use crate::config::{AaaaRecord, ARecord, Config, DEFAULT_TTL, Label, parse, parse_allwildcard, parse_basic, parse_regex, parse_subwildcard, parse_value_ttl, parse_wildcard, parse_zone_matcher, parse_zone_matchers, Records, Zone};
 	use crate::regex::Regex;
 	
 	#[test]
