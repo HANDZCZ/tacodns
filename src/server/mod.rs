@@ -7,7 +7,7 @@ use threadpool::ThreadPool;
 
 use protocol::Resource;
 
-use crate::config::{AaaaRecord, ARecord, CnameRecord, Config, MxRecord, NsRecord, Records, Zone, ZoneMatcher};
+use crate::config::{AaaaRecord, ARecord, CnameRecord, Config, Label, MxRecord, NsRecord, Records, Zone, ZoneMatcher};
 use crate::options::Options;
 use crate::server::protocol::{Message, Question, record_type};
 
@@ -116,6 +116,108 @@ fn resolver_lookup(question: Vec<Question>, server: SocketAddr) -> Response {
 	}
 }
 
+fn does_match(matchers: &[ZoneMatcher], qname: &[String]) -> bool {
+	'matcher: for zone_matcher in matchers {
+		let mut qname = qname.iter().rev().peekable();
+		'label: for label in zone_matcher.iter().rev() {
+			
+			match label {
+				Label::Basic(string) => {
+					// if this label doesn't match exactly
+					if qname.next() != Some(string) {
+						// try another matcher
+						continue 'matcher;
+					}
+				}
+				Label::Regex(eager, regex) => {
+					if *eager {
+						// currently unimplemented
+						// do we want to consume everything possible or just what's needed to match?
+						// originally, I was just going to consume labels until it matched (and that's what the below code does)
+						// but that doesn't allow patterns such as /([a-z]+\.)*[a-z]+/
+						// this is because it matches the first [a-z]+ and then dies
+						unimplemented!();
+						
+						/*
+						// eager mode we keep consuming labels until we match
+						let mut growing_name = String::new();
+						loop {
+							match qname.next() {
+								Some(label) => {
+									if growing_name.len() > 0 {
+										growing_name.insert(0, '.');
+									}
+									growing_name.insert_str(0, label);
+									
+									if regex.is_match(&growing_name) {
+										// we've matched; next label
+										continue 'label;
+									}
+								}
+								None => {
+									// we're out of labels with no match
+									continue 'matcher;
+								}
+							}
+						}*/
+					} else {
+						// if this regex doesn't match
+						if let Some(label) = qname.next() {
+							if !regex.is_match(label) {
+								// try another matcher
+								continue 'matcher;
+							}
+						} else {
+							continue 'matcher;
+						}
+					}
+				}
+				Label::Wildcard => {
+					// wildcards must match one label
+					// take one off
+					if qname.next().is_none() {
+						// if no more labels; try another matcher
+						continue 'matcher;
+					}
+				}
+				Label::SubWildcard => {
+					// sub wildcards must match at least one label
+					if qname.next().is_none() {
+						continue 'matcher;
+					}
+					
+					// and consume all of them
+					while qname.peek().is_some() {
+						qname.next();
+					}
+				}
+				Label::AllWildcard => {
+					// all wildcards can match any number of additional labels
+					
+					// drain everything
+					while qname.peek().is_some() {
+						qname.next();
+					}
+					
+					// and match successfully
+					break 'label;
+				}
+			}
+		}
+		
+		// out of labels
+		
+		// ensure we're also out of names
+		if qname.peek().is_none() {
+			// great! everything lines up
+			return true;
+		}
+	}
+	
+	// ran out of matchers; no match
+	return false;
+}
+
 fn handle_dns(question: &Vec<Question>, options: &Options, config: &Config) -> Response {
 	let mut answer: Vec<Resource> = Vec::new();
 	let mut authority: Vec<Resource> = Vec::new();
@@ -126,13 +228,7 @@ fn handle_dns(question: &Vec<Question>, options: &Options, config: &Config) -> R
 		let qname: String = question.qname.join(".");
 		
 		for zone in &config.zones {
-			let matches = match &zone.matcher {
-				ZoneMatcher::Basic(basic) => basic.as_str() == qname.as_str(),
-				ZoneMatcher::Regex(regex) => regex.is_match(&qname),
-				ZoneMatcher::List(_) => unimplemented!(),
-				ZoneMatcher::Wildcard(_, _) => unimplemented!(),
-			};
-			if matches {
+			if does_match(&zone.matchers, &question.qname) {
 				match question.qtype {
 					// CNAME
 					_ if !zone.records.cname.is_empty() => {
@@ -331,10 +427,68 @@ fn handle_dns(question: &Vec<Question>, options: &Options, config: &Config) -> R
 mod test {
 	use std::time::Duration;
 	
-	use crate::config::{AaaaRecord, ARecord, CnameRecord, Config, MxRecord, Records, Zone, ZoneMatcher};
+	use crate::config::{AaaaRecord, ARecord, CnameRecord, Config, Label, MxRecord, Records, Zone, ZoneMatcher};
 	use crate::options::Options;
-	use crate::server::{handle_dns, Response, rewrite_xname};
+	use crate::regex::Regex;
+	use crate::server::{does_match, handle_dns, Response, rewrite_xname};
 	use crate::server::protocol::{Question, record_type, Resource};
+	
+	#[test]
+	fn test_does_match() {
+		let com = &["com".to_string()];
+		let example_com = &["example".to_string(), "com".to_string()];
+		let www_example_com = &["www".to_string(), "example".to_string(), "com".to_string()];
+		let lcom = Label::Basic("com".to_string());
+		let lexample = Label::Basic("example".to_string());
+		let lwww = Label::Basic("www".to_string());
+		
+		assert!(does_match(&[vec![lcom.clone()]], com));
+		assert!(!does_match(&[vec![lcom.clone()]], example_com));
+		assert!(does_match(&[vec![lexample.clone(), lcom.clone()]], example_com));
+		assert!(!does_match(&[vec![lexample.clone(), lcom.clone()]], com));
+		assert!(does_match(&[vec![lwww.clone(), lexample.clone(), lcom.clone()]], www_example_com));
+		
+		assert!(!does_match(&[vec![Label::Wildcard, lcom.clone()]], com));
+		assert!(does_match(&[vec![Label::Wildcard, lcom.clone()]], example_com));
+		assert!(!does_match(&[vec![Label::Wildcard, lcom.clone()]], www_example_com));
+		assert!(does_match(&[vec![Label::Wildcard, Label::Wildcard, lcom.clone()]], www_example_com));
+		
+		assert!(!does_match(&[vec![lwww.clone(), Label::Wildcard, lcom.clone()]], com));
+		assert!(!does_match(&[vec![lwww.clone(), Label::Wildcard, lcom.clone()]], example_com));
+		assert!(does_match(&[vec![lwww.clone(), Label::Wildcard, lcom.clone()]], www_example_com));
+		
+		assert!(!does_match(&[vec![Label::SubWildcard, lcom.clone()]], com));
+		assert!(does_match(&[vec![Label::SubWildcard, lcom.clone()]], example_com));
+		assert!(does_match(&[vec![Label::SubWildcard, lcom.clone()]], www_example_com));
+		
+		assert!(!does_match(&[vec![Label::AllWildcard, lcom.clone()]], &[]));
+		assert!(does_match(&[vec![Label::AllWildcard, lcom.clone()]], com));
+		assert!(does_match(&[vec![Label::AllWildcard, lcom.clone()]], example_com));
+		assert!(does_match(&[vec![Label::AllWildcard, lcom.clone()]], www_example_com));
+		
+		assert!(does_match(&[vec![Label::Regex(false, Regex::new(r"com").unwrap())]], com));
+		assert!(!does_match(&[vec![Label::Regex(false, Regex::new(r"com").unwrap())]], example_com));
+		assert!(does_match(&[vec![Label::Regex(false, Regex::new(r"c.m").unwrap())]], com));
+		assert!(does_match(&[vec![Label::Regex(false, Regex::new(r"[a-z]{3}").unwrap())]], com));
+		
+		/*
+		eager not yet implemented
+		assert!(does_match(&[vec![Label::Regex(true, Regex::new(r"[a-z]+\.[a-z]+").unwrap())]], example_com));
+		assert!(does_match(&[vec![Label::Regex(true, Regex::new(r"([a-z]+\.)*[a-z]+").unwrap())]], com));
+		assert!(does_match(&[vec![Label::Regex(true, Regex::new(r"([a-z]+\.)*[a-z]+").unwrap())]], example_com));
+		assert!(does_match(&[vec![Label::Regex(true, Regex::new(r"([a-z]+\.)*[a-z]+").unwrap())]], www_example_com));
+		*/
+		
+		assert!(!does_match(&[vec![Label::Regex(false, Regex::new(r"[a-z]+").unwrap()), lcom.clone()]], com));
+		assert!(does_match(&[vec![Label::Regex(false, Regex::new(r"[a-z]+").unwrap()), lcom.clone()]], example_com));
+		
+		assert!(does_match(&[vec![lexample.clone(), Label::Regex(false, Regex::new(r"com").unwrap())]], example_com));
+		assert!(does_match(&[vec![Label::Regex(false, Regex::new(r"example").unwrap()), lcom.clone()]], example_com));
+		assert!(does_match(&[vec![Label::Wildcard, Label::Regex(false, Regex::new(r"com").unwrap())]], example_com));
+		assert!(does_match(&[vec![Label::SubWildcard, Label::Regex(false, Regex::new(r"com").unwrap())]], example_com));
+		assert!(does_match(&[vec![Label::AllWildcard, Label::Regex(false, Regex::new(r"com").unwrap())]], example_com));
+		assert!(does_match(&[vec![Label::AllWildcard, Label::Regex(false, Regex::new(r"com").unwrap())]], com));
+	}
 	
 	fn test_options() -> Options {
 		Options {
@@ -358,7 +512,7 @@ mod test {
 			ttl: Duration::from_secs(1800),
 			authority: vec![],
 			zones: vec![Zone {
-				matcher: ZoneMatcher::Basic("example.com".to_string()),
+				matchers: vec![vec![Label::Basic("example".to_string()), Label::Basic("com".to_string())]],
 				records: Records {
 					a: vec![ARecord {
 						ttl: Duration::from_secs(100),
@@ -387,7 +541,7 @@ mod test {
 			ttl: Duration::from_secs(1800),
 			authority: vec![],
 			zones: vec![Zone {
-				matcher: ZoneMatcher::Basic("example.com".to_string()),
+				matchers: vec![vec![Label::Basic("example".to_string()), Label::Basic("com".to_string())]],
 				records: Records {
 					a: vec![ARecord {
 						ttl: Duration::from_secs(100),
@@ -428,7 +582,7 @@ mod test {
 			ttl: Duration::from_secs(1800),
 			authority: vec![],
 			zones: vec![Zone {
-				matcher: ZoneMatcher::Basic("example.com".to_string()),
+				matchers: vec![vec![Label::Basic("example".to_string()), Label::Basic("com".to_string())]],
 				records: Records {
 					a: vec![],
 					aaaa: vec![AaaaRecord {
@@ -457,7 +611,7 @@ mod test {
 			ttl: Duration::from_secs(1800),
 			authority: vec![],
 			zones: vec![Zone {
-				matcher: ZoneMatcher::Basic("example.com".to_string()),
+				matchers: vec![vec![Label::Basic("example".to_string()), Label::Basic("com".to_string())]],
 				records: Records {
 					a: vec![],
 					aaaa: vec![AaaaRecord {
@@ -509,7 +663,7 @@ mod test {
 			ttl: Duration::from_secs(1800),
 			authority: vec![],
 			zones: vec![Zone {
-				matcher: ZoneMatcher::Basic("example.com".to_string()),
+				matchers: vec![vec![Label::Basic("example".to_string()), Label::Basic("com".to_string())]],
 				records: Records {
 					a: vec![ARecord {
 						ttl: Duration::from_secs(100),
@@ -522,7 +676,7 @@ mod test {
 					mx: vec![],
 				},
 			}, Zone {
-				matcher: ZoneMatcher::Basic("www.example.com".to_string()),
+				matchers: vec![vec![Label::Basic("www".to_string()), Label::Basic("example".to_string()), Label::Basic("com".to_string())]],
 				records: Records {
 					a: vec![],
 					aaaa: vec![],
@@ -557,7 +711,7 @@ mod test {
 			ttl: Duration::from_secs(1800),
 			authority: vec![],
 			zones: vec![Zone {
-				matcher: ZoneMatcher::Basic("example.com".to_string()),
+				matchers: vec![vec![Label::Basic("example".to_string()), Label::Basic("com".to_string())]],
 				records: Records {
 					a: vec![ARecord {
 						ttl: Duration::from_secs(100),
@@ -570,7 +724,7 @@ mod test {
 					mx: vec![],
 				},
 			}, Zone {
-				matcher: ZoneMatcher::Basic("www.example.com".to_string()),
+				matchers: vec![vec![Label::Basic("www".to_string()), Label::Basic("example".to_string()), Label::Basic("com".to_string())]],
 				records: Records {
 					a: vec![],
 					aaaa: vec![],
@@ -583,7 +737,7 @@ mod test {
 					mx: vec![],
 				},
 			}, Zone {
-				matcher: ZoneMatcher::Basic("www2.example.com".to_string()),
+				matchers: vec![vec![Label::Basic("www2".to_string()), Label::Basic("example".to_string()), Label::Basic("com".to_string())]],
 				records: Records {
 					a: vec![],
 					aaaa: vec![],
@@ -627,7 +781,7 @@ mod test {
 			ttl: Duration::from_secs(1800),
 			authority: vec![],
 			zones: vec![Zone {
-				matcher: ZoneMatcher::Basic("example.com".to_string()),
+				matchers: vec![vec![Label::Basic("example".to_string()), Label::Basic("com".to_string())]],
 				records: Records {
 					a: vec![],
 					aaaa: vec![],
