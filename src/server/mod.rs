@@ -20,14 +20,14 @@ pub fn serve(options: Options, config: Config) {
 	let udp_socket = UdpSocket::bind((options.listen_address, options.listen_port)).unwrap();
 	let tcp_socket = TcpListener::bind((options.listen_address, options.listen_port)).unwrap();
 	
-	assert!(options.threads >= 3, "Thread count must be >=3");
-	let pool = Arc::new(Mutex::new(ThreadPool::new(options.threads)));
+	assert!(options.threads >= 1, "Thread count must be >=1");
+	let pool = Arc::new(Mutex::new(ThreadPool::with_name("worker".to_string(), options.threads)));
 	
 	let udp = {
 		let pool = pool.clone();
 		let options = options.clone();
 		let config = config.clone();
-		thread::spawn(move || {
+		thread::Builder::new().name("UDP server".to_string()).spawn(move || {
 			loop {
 				let mut buf = vec![0; 512];
 				let (_size, src) = udp_socket.recv_from(&mut buf).unwrap();
@@ -40,15 +40,14 @@ pub fn serve(options: Options, config: Config) {
 				pool.lock().unwrap().execute(move || {
 					let message = handle_request(buf, &options, &config);
 					
-					if options.verbose { println!("response: {:?}", message); }
 					socket.send_to(&message, src).unwrap();
 					if options.verbose { println!("response took: {:?}", instant.elapsed()); }
 				});
 			}
-		})
+		}).expect("failed to spawn thread")
 	};
 	
-	let tcp = thread::spawn(move || {
+	let tcp = thread::Builder::new().name("UDP server".to_string()).spawn(move || {
 		loop {
 			let (mut stream, _src) = tcp_socket.accept().unwrap();
 			if options.verbose { println!("handling TCP request"); }
@@ -63,13 +62,12 @@ pub fn serve(options: Options, config: Config) {
 			pool.lock().unwrap().execute(move || {
 				let message = handle_request(buf, &options, &config);
 				
-				if options.verbose { println!("response: {:?}", message); }
 				stream.write_u16::<BigEndian>(message.len() as u16).unwrap();
 				stream.write(message.as_slice()).unwrap();
 				if options.verbose { println!("response took: {:?}", instant.elapsed()); }
 			});
 		}
-	});
+	}).expect("failed to spawn thread");
 	
 	udp.join().unwrap();
 	tcp.join().unwrap();
@@ -99,6 +97,7 @@ fn handle_request(buf: Vec<u8>, options: &Options, config: &Config) -> Vec<u8> {
 		Response::Refused => message.header.rcode = 5,
 	}
 	
+	if options.verbose { println!("response: {:?}", message); }
 	return protocol::serialize(&message);
 }
 
