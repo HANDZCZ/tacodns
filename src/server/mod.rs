@@ -213,13 +213,17 @@ fn resolver_lookup(question: Vec<Question>, server: SocketAddr) -> Response {
 
 fn does_match(matchers: &[ZoneMatcher], qname: &[String]) -> bool {
 	'matcher: for zone_matcher in matchers {
-		let mut qname = qname.iter().rev().peekable();
+		let mut qname = qname.iter().map(|label| label.to_lowercase()).rev().peekable();
 		'label: for label in zone_matcher.iter().rev() {
 			match label {
 				Label::Basic(string) => {
 					// if this label doesn't match exactly
-					if qname.next() != Some(string) {
-						// try another matcher
+					if let Some(value) = qname.next() {
+						if &value != string {
+							// try another matcher
+							continue 'matcher;
+						}
+					} else {
 						continue 'matcher;
 					}
 				}
@@ -257,7 +261,7 @@ fn does_match(matchers: &[ZoneMatcher], qname: &[String]) -> bool {
 					} else {
 						// if this regex doesn't match
 						if let Some(label) = qname.next() {
-							if !regex.is_match(label) {
+							if !regex.is_match(&label) {
 								// try another matcher
 								continue 'matcher;
 							}
@@ -598,6 +602,8 @@ mod test {
 		let lcom = Label::Basic("com".to_string());
 		let lexample = Label::Basic("example".to_string());
 		let lwww = Label::Basic("www".to_string());
+		
+		assert!(does_match(&[vec![Label::Basic("example".to_string())]], &["ExAmplE".to_string()]));
 		
 		assert!(does_match(&[vec![lcom.clone()]], com));
 		assert!(!does_match(&[vec![lcom.clone()]], example_com));

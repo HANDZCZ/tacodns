@@ -142,8 +142,8 @@ pub fn parse(yaml_data: &str) -> Config {
 }
 
 fn parse_basic(i: &[u8]) -> IResult<&[u8], Label> {
-	let (i, value) = take_while_m_n(1, 63, |x| (x >= 'a' as u8 && x <= 'z' as u8) || (x >= '0' as u8 && x <= '9' as u8) || x == '-' as u8)(i)?;
-	Ok((i, Label::Basic(String::from_utf8(value.to_vec()).unwrap())))
+	let (i, value) = take_while_m_n(1, 63, |x| (x >= 'a' as u8 && x <= 'z' as u8) || (x >= 'A' as u8 && x <= 'Z' as u8) || (x >= '0' as u8 && x <= '9' as u8) || x == '-' as u8)(i)?;
+	Ok((i, Label::Basic(String::from_utf8(value.to_vec()).unwrap().to_lowercase())))
 }
 
 fn parse_regex(i: &[u8]) -> IResult<&[u8], Label> {
@@ -380,6 +380,7 @@ mod test {
 	fn test_parse_basic() {
 		assert_eq!(parse_basic("test".as_ref()).unwrap().1, Label::Basic("test".to_string()));
 		assert_eq!(parse_basic("test.".as_ref()).unwrap().1, Label::Basic("test".to_string()));
+		assert_eq!(parse_basic("TeSt.".as_ref()).unwrap().1, Label::Basic("test".to_string()));
 	}
 	
 	#[test]
