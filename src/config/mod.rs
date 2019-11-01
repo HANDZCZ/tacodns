@@ -429,9 +429,9 @@ mod test {
 	
 	#[test]
 	fn test_parse_value_ttl() {
-		assert_eq!(parse_value_ttl("test", Duration::from_secs(30)), ("test", Duration::from_secs(30)));
-		assert_eq!(parse_value_ttl("test 1", Duration::from_secs(30)), ("test", Duration::from_secs(1)));
-		assert_eq!(parse_value_ttl("test 1m", Duration::from_secs(30)), ("test", Duration::from_secs(60)));
+		assert_eq!(parse_value_ttl("test", Duration::from_secs(30)), ("test", Duration::from_secs(30), vec![]));
+		assert_eq!(parse_value_ttl("test 1", Duration::from_secs(30)), ("test", Duration::from_secs(1), vec![]));
+		assert_eq!(parse_value_ttl("test 1m", Duration::from_secs(30)), ("test", Duration::from_secs(60), vec![]));
 	}
 	
 	#[test]
