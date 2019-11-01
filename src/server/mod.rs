@@ -181,9 +181,6 @@ fn resolver_lookup(question: Vec<Question>, server: SocketAddr) -> Response {
 			stream.read(buffer.as_mut_slice()).unwrap();
 			
 			let message = protocol::parse(buffer.as_slice());
-			if message.header.rcode != 0 {
-				panic!("resolver_lookup rcode != 0: {}", message.header.rcode);
-			}
 			
 			match message.header.rcode {
 				1 => return Response::FormatError,
