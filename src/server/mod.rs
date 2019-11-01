@@ -185,6 +185,15 @@ fn resolver_lookup(question: Vec<Question>, server: SocketAddr) -> Response {
 				panic!("resolver_lookup rcode != 0: {}", message.header.rcode);
 			}
 			
+			match message.header.rcode {
+				1 => return Response::FormatError,
+				2 => return Response::ServerFailure,
+				3 => return Response::NameError,
+				4 => return Response::NotImplemented,
+				5 => return Response::Refused,
+				_ => {}
+			}
+			
 			{
 				let mut least_expiration = u32::max_value();
 				for record in message.answer.iter().chain(message.authority.iter()).chain(message.additional.iter()) {
