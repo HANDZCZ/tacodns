@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 use std::io::{Cursor, Read, Write};
-use std::net::{IpAddr, SocketAddr, TcpStream, UdpSocket};
-use std::sync::Mutex;
+use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream, UdpSocket};
+use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
@@ -16,48 +17,89 @@ use crate::server::protocol::{Question, record_type};
 mod protocol;
 
 pub fn serve(options: Options, config: Config) {
-	let socket = UdpSocket::bind((options.listen_address, options.listen_port)).unwrap();
+	let udp_socket = UdpSocket::bind((options.listen_address, options.listen_port)).unwrap();
+	let tcp_socket = TcpListener::bind((options.listen_address, options.listen_port)).unwrap();
 	
-	assert!(options.threads >= 2, "Thread count must be >=2");
-	let pool = ThreadPool::new(options.threads);
+	assert!(options.threads >= 3, "Thread count must be >=3");
+	let pool = Arc::new(Mutex::new(ThreadPool::new(options.threads)));
 	
-	loop {
-		let mut buf = [0; 512];
-		let (_size, src) = socket.recv_from(&mut buf).unwrap();
-		
+	let udp = {
+		let pool = pool.clone();
 		let options = options.clone();
 		let config = config.clone();
-		let socket = socket.try_clone().unwrap();
-		let instant = Instant::now();
-		pool.execute(move || {
-			let mut message = protocol::parse(&buf);
-			if options.verbose { println!("request: {:?}", message); }
-			
-			let response = handle_dns(&message.question, &options, &config);
-			
-			message.header.qr = true;
-			message.header.aa = true;
-			message.header.ra = false;
-			
-			match response {
-				Response::Ok(answer, authority, additional) => {
-					message.header.rcode = 0;
-					message.answer = answer;
-					message.authority = authority;
-					message.additional = additional;
-				}
-				Response::FormatError => message.header.rcode = 1,
-				Response::ServerFailure => message.header.rcode = 2,
-				Response::NameError => message.header.rcode = 3,
-				Response::NotImplemented => message.header.rcode = 4,
-				Response::Refused => message.header.rcode = 5,
+		thread::spawn(move || {
+			loop {
+				let mut buf = vec![0; 512];
+				let (_size, src) = udp_socket.recv_from(&mut buf).unwrap();
+				if options.verbose { println!("handling UDP request"); }
+				
+				let options = options.clone();
+				let config = config.clone();
+				let socket = udp_socket.try_clone().unwrap();
+				let instant = Instant::now();
+				pool.lock().unwrap().execute(move || {
+					let message = handle_request(buf, &options, &config);
+					
+					if options.verbose { println!("response: {:?}", message); }
+					socket.send_to(&message, src).unwrap();
+					if options.verbose { println!("response took: {:?}", instant.elapsed()); }
+				});
 			}
+		})
+	};
+	
+	let tcp = thread::spawn(move || {
+		loop {
+			let (mut stream, _src) = tcp_socket.accept().unwrap();
+			if options.verbose { println!("handling TCP request"); }
 			
-			if options.verbose { println!("response: {:?}", message); }
-			socket.send_to(protocol::serialize(&message).as_slice(), src).unwrap();
-			if options.verbose { println!("response took: {:?}", instant.elapsed()); }
-		});
+			let message_size = stream.read_u16::<BigEndian>().unwrap();
+			let mut buf: Vec<u8> = vec![0; message_size as usize];
+			stream.read(buf.as_mut_slice()).unwrap();
+			
+			let options = options.clone();
+			let config = config.clone();
+			let instant = Instant::now();
+			pool.lock().unwrap().execute(move || {
+				let message = handle_request(buf, &options, &config);
+				
+				if options.verbose { println!("response: {:?}", message); }
+				stream.write_u16::<BigEndian>(message.len() as u16).unwrap();
+				stream.write(message.as_slice()).unwrap();
+				if options.verbose { println!("response took: {:?}", instant.elapsed()); }
+			});
+		}
+	});
+	
+	udp.join().unwrap();
+	tcp.join().unwrap();
+}
+
+fn handle_request(buf: Vec<u8>, options: &Options, config: &Config) -> Vec<u8> {
+	let mut message = protocol::parse(&buf);
+	if options.verbose { println!("request: {:?}", message); }
+	
+	let response = handle_dns(&message.question, &options, &config);
+	
+	message.header.qr = true;
+	message.header.aa = true;
+	message.header.ra = false;
+	
+	match response {
+		Response::Ok(answer, authority, additional) => {
+			message.header.rcode = 0;
+			message.answer = answer;
+			message.authority = authority;
+			message.additional = additional;
+		}
+		Response::FormatError => message.header.rcode = 1,
+		Response::ServerFailure => message.header.rcode = 2,
+		Response::NameError => message.header.rcode = 3,
+		Response::NotImplemented => message.header.rcode = 4,
+		Response::Refused => message.header.rcode = 5,
 	}
+	
+	return protocol::serialize(&message);
 }
 
 #[derive(Debug, PartialEq, Clone)]
