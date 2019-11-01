@@ -474,9 +474,7 @@ fn handle_dns(question: &Vec<Question>, options: &Options, config: &Config) -> R
 					}
 					
 					// SOA
-					record_type::SOA => {
-						return Response::NotImplemented;
-					}
+					record_type::SOA => {}
 					
 					// MX
 					record_type::MX => {
@@ -496,16 +494,12 @@ fn handle_dns(question: &Vec<Question>, options: &Options, config: &Config) -> R
 					}
 					
 					// TXT
-					record_type::TXT => {
-						return Response::NotImplemented;
-					}
+					record_type::TXT => {}
 					
 					// SRV
-					record_type::SRV => {
-						return Response::NotImplemented;
-					}
+					record_type::SRV => {}
 					
-					_ => return Response::NotImplemented
+					_ => {}
 				}
 				
 				if answer.is_empty() && !zone.records.rns.is_empty() {
