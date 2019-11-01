@@ -1,6 +1,8 @@
+use std::collections::HashMap;
 use std::io::{Cursor, Read, Write};
 use std::net::{IpAddr, SocketAddr, TcpStream, UdpSocket};
-use std::time::Instant;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use threadpool::ThreadPool;
@@ -58,7 +60,7 @@ pub fn serve(options: Options, config: Config) {
 	}
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 enum Response {
 	Ok(Vec<Resource>, Vec<Resource>, Vec<Resource>),
 	#[allow(dead_code)]
@@ -100,11 +102,35 @@ fn rewrite_xname(xname_destination: &str, qname: &str) -> String {
 
 /// Performs a DNS query against a third-party recursive resolver.
 fn resolver_lookup(question: Vec<Question>, server: SocketAddr) -> Response {
-	// TODO cache
+	struct CacheEntry {
+		response: (Vec<Resource>, Vec<Resource>, Vec<Resource>),
+		cache_time: Instant,
+		expiration: Instant,
+	}
+	lazy_static! {
+		static ref CACHE: Mutex<HashMap<Vec<Question>, CacheEntry>> = Mutex::new(HashMap::new());
+	}
+	
+	{
+		let cache: &mut HashMap<Vec<Question>, CacheEntry> = &mut *CACHE.lock().unwrap();
+		let cached = cache.get(&question);
+		if let Some(entry) = cached {
+			if entry.expiration > Instant::now() {
+				let mut response = entry.response.clone();
+				for record in response.0.iter_mut().chain(response.1.iter_mut()).chain(response.2.iter_mut()) {
+					record.ttl -= entry.cache_time.elapsed().as_secs() as u32;
+				}
+				return Response::Ok(response.0, response.1, response.2);
+			} else {
+				cache.remove(&question);
+			}
+		}
+	}
+	
 	match TcpStream::connect(server) {
 		Err(_) => return Response::ServerFailure,
 		Ok(mut stream) => {
-			let request = protocol::serialize(&protocol::make_message_from_question(question));
+			let request = protocol::serialize(&protocol::make_message_from_question(question.clone()));
 			stream.write_u16::<BigEndian>(request.len() as u16).unwrap();
 			stream.write(request.as_slice()).unwrap();
 			
@@ -116,6 +142,23 @@ fn resolver_lookup(question: Vec<Question>, server: SocketAddr) -> Response {
 			if message.header.rcode != 0 {
 				panic!("resolver_lookup rcode != 0: {}", message.header.rcode);
 			}
+			
+			{
+				let mut least_expiration = u32::max_value();
+				for record in message.answer.iter().chain(message.authority.iter()).chain(message.additional.iter()) {
+					if record.ttl < least_expiration {
+						least_expiration = record.ttl;
+					}
+				}
+				
+				let cache: &mut HashMap<Vec<Question>, CacheEntry> = &mut *CACHE.lock().unwrap();
+				cache.insert(question, CacheEntry {
+					response: (message.answer.clone(), message.authority.clone(), message.additional.clone()),
+					cache_time: Instant::now(),
+					expiration: Instant::now() + Duration::from_secs(least_expiration as u64),
+				});
+			}
+			
 			return Response::Ok(message.answer, message.authority, message.additional);
 		}
 	}

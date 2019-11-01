@@ -1,5 +1,7 @@
 #[macro_use]
-extern crate clap; // would put this in options.rs, but #[macro_use] can only be done in crate root
+extern crate clap;
+#[macro_use]
+extern crate lazy_static; // would put this in options.rs, but #[macro_use] can only be done in crate root
 
 use std::{env, fs::read_to_string};
 

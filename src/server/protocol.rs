@@ -33,14 +33,14 @@ pub struct Header {
 	pub rcode: u8,
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
 pub struct Question {
 	pub qname: Vec<String>,
 	pub qtype: u16,
 	pub qclass: u16,
 }
 
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, Default, PartialEq, Clone)]
 pub struct Resource {
 	pub rname: Vec<String>,
 	pub rtype: u16,
