@@ -1,6 +1,6 @@
 extern crate yaml_rust;
 
-use std::net::{Ipv4Addr, Ipv6Addr};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::Duration;
 
 use nom::branch::alt;
@@ -67,6 +67,19 @@ pub struct MxRecord {
 	pub host: String,
 }
 
+#[derive(Debug, PartialEq, Clone)]
+pub enum RnsHost {
+	SocketAddr(SocketAddr),
+	HostPort(String, u16),
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct RnsRecord {
+	pub ttl: Duration,
+	pub host: RnsHost,
+	pub external: bool,
+}
+
 #[derive(Debug, Default, PartialEq, Clone)]
 pub struct Records {
 	pub a: Vec<ARecord>,
@@ -75,6 +88,7 @@ pub struct Records {
 	pub cname: Vec<CnameRecord>,
 	pub aname: Vec<AnameRecord>,
 	pub mx: Vec<MxRecord>,
+	pub rns: Vec<RnsRecord>,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -176,7 +190,7 @@ fn parse_zones(yaml: &Yaml, default_ttl: Duration) -> Vec<Zone> {
 	let mut zones = Vec::new();
 	
 	for (key, value) in yaml {
-		let (content, ttl) = parse_value_ttl(key.expect_str(), default_ttl);
+		let (content, ttl, _) = parse_value_ttl(key.expect_str(), default_ttl);
 		let zone_matchers = parse_zone_matchers(content.as_ref()).unwrap().1;
 		
 		let value = value.as_hash().expect(format!("Expected zone value to be mapping: {:?}", value).as_str());
@@ -199,28 +213,30 @@ fn arrayify(value: Yaml) -> yaml::Array {
 	}
 }
 
-fn parse_value_ttl(value: &str, default_ttl: Duration) -> (&str, Duration) {
+fn parse_value_ttl(value: &str, default_ttl: Duration) -> (&str, Duration, Vec<&str>) {
 	let parts: Vec<&str> = value.split(' ').collect();
 	
-	match parts.len() {
-		1 => (parts[0], default_ttl),
-		2 => (parts[0], Duration::parse(parts[1]).unwrap()),
-		_ => panic!("unexpected part count; perhaps you have spaces where they shouldn't be?"),
-	}
+	let body = parts[0];
+	
+	let duration = Duration::parse(parts.last().unwrap());
+	
+	let flags = parts[1..parts.len() - if duration.is_ok() { 1 } else { 0 }].to_vec();
+	
+	return (body, duration.unwrap_or(default_ttl), flags);
 }
 
 fn parse_zone_content(zone: &yaml::Hash, ttl: Duration) -> Records {
 	let mut records = Records::default();
 	
 	for (key, value) in zone {
-		let (key_record_type, ttl) = parse_value_ttl(key.expect_str(), ttl);
+		let (key_record_type, ttl, _) = parse_value_ttl(key.expect_str(), ttl);
 		
 		if key_record_type.to_uppercase().as_str() == key_record_type {
 			let entries = arrayify(value.clone());
 			match key_record_type {
 				"A" => {
 					for entry in entries {
-						let (value, ttl) = parse_value_ttl(&entry.expect_str(), ttl);
+						let (value, ttl, _) = parse_value_ttl(&entry.expect_str(), ttl);
 						let ip4_addr: Ipv4Addr = value.parse().expect(format!("Value not valid IPv4 address: {:?}", value).as_str());
 						records.a.push(ARecord {
 							ttl,
@@ -230,7 +246,7 @@ fn parse_zone_content(zone: &yaml::Hash, ttl: Duration) -> Records {
 				}
 				"AAAA" => {
 					for entry in entries {
-						let (value, ttl) = parse_value_ttl(&entry.expect_str(), ttl);
+						let (value, ttl, _) = parse_value_ttl(&entry.expect_str(), ttl);
 						let ip6_addr: Ipv6Addr = value.parse().expect(format!("Value not valid IPv6 address: {:?}", value).as_str());
 						records.aaaa.push(AaaaRecord {
 							ttl,
@@ -240,7 +256,7 @@ fn parse_zone_content(zone: &yaml::Hash, ttl: Duration) -> Records {
 				}
 				"NS" => {
 					for entry in entries {
-						let (value, ttl) = parse_value_ttl(&entry.expect_str(), ttl);
+						let (value, ttl, _) = parse_value_ttl(&entry.expect_str(), ttl);
 						let mut nameserver = value.to_string();
 						if nameserver.ends_with(".") { nameserver.split_off(nameserver.len() - 2); }
 						records.ns.push(NsRecord {
@@ -251,7 +267,7 @@ fn parse_zone_content(zone: &yaml::Hash, ttl: Duration) -> Records {
 				}
 				"CNAME" => {
 					for entry in entries {
-						let (value, ttl) = parse_value_ttl(&entry.expect_str(), ttl);
+						let (value, ttl, _) = parse_value_ttl(&entry.expect_str(), ttl);
 						records.cname.push(CnameRecord {
 							ttl,
 							name: value.to_string(),
@@ -260,7 +276,7 @@ fn parse_zone_content(zone: &yaml::Hash, ttl: Duration) -> Records {
 				}
 				"ANAME" => {
 					for entry in entries {
-						let (value, ttl) = parse_value_ttl(&entry.expect_str(), ttl);
+						let (value, ttl, _) = parse_value_ttl(&entry.expect_str(), ttl);
 						records.aname.push(AnameRecord {
 							ttl,
 							name: value.to_string(),
@@ -271,7 +287,7 @@ fn parse_zone_content(zone: &yaml::Hash, ttl: Duration) -> Records {
 					for entry in entries {
 						match &entry {
 							Yaml::String(string) => {
-								let (value, ttl) = parse_value_ttl(&string, ttl);
+								let (value, ttl, _) = parse_value_ttl(&string, ttl);
 								records.mx.push(MxRecord {
 									ttl,
 									priority: 10,
@@ -296,6 +312,33 @@ fn parse_zone_content(zone: &yaml::Hash, ttl: Duration) -> Records {
 							}
 							_ => panic!("Expected String, Array, or Hash: {:?}", entry),
 						}
+					}
+				}
+				"RNS" => {
+					for entry in entries {
+						let (value, ttl, flags) = parse_value_ttl(&entry.expect_str(), ttl);
+						
+						// split off the port number from the host
+						let split: Vec<&str> = value.split(":").collect();
+						let (host, port): (&str, u16) = match split.len() {
+							1 => (split[0], 53),
+							2 => (split[0], split[1].parse().unwrap()),
+							_ => panic!("Unexpected socket addr number"),
+						};
+						
+						// try to parse the host into an IP
+						let host = if let Ok(ip_addr) = host.parse() {
+							RnsHost::SocketAddr(SocketAddr::new(ip_addr, port))
+						} else {
+							// if that fails, assume it's a DNS name
+							RnsHost::HostPort(host.to_string(), port)
+						};
+						
+						records.rns.push(RnsRecord {
+							ttl,
+							host,
+							external: flags.contains(&"external"),
+						});
 					}
 				}
 				_ => panic!("Unknown record type: {:?}", key),
@@ -410,6 +453,7 @@ mod test {
 					cname: vec![],
 					aname: vec![],
 					mx: vec![],
+					rns: vec![],
 				},
 			}],
 		});
@@ -434,6 +478,7 @@ mod test {
 					cname: vec![],
 					aname: vec![],
 					mx: vec![],
+					rns: vec![],
 				},
 			}],
 		});

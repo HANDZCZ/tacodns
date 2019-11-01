@@ -1,5 +1,5 @@
-use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpStream, UdpSocket};
+use std::io::{Cursor, Read, Write};
+use std::net::{IpAddr, SocketAddr, TcpStream, UdpSocket};
 use std::time::Instant;
 
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
@@ -7,7 +7,7 @@ use threadpool::ThreadPool;
 
 use protocol::Resource;
 
-use crate::config::{Config, Label, NsRecord, ZoneMatcher};
+use crate::config::{Config, Label, NsRecord, RnsHost, ZoneMatcher};
 use crate::options::Options;
 use crate::server::protocol::{Question, record_type};
 
@@ -113,6 +113,9 @@ fn resolver_lookup(question: Vec<Question>, server: SocketAddr) -> Response {
 			stream.read(buffer.as_mut_slice()).unwrap();
 			
 			let message = protocol::parse(buffer.as_slice());
+			if message.header.rcode != 0 {
+				panic!("resolver_lookup rcode != 0: {}", message.header.rcode);
+			}
 			return Response::Ok(message.answer, message.authority, message.additional);
 		}
 	}
@@ -411,13 +414,82 @@ fn handle_dns(question: &Vec<Question>, options: &Options, config: &Config) -> R
 					_ => return Response::NotImplemented
 				}
 				
+				if answer.is_empty() && !zone.records.rns.is_empty() {
+					for rns in &zone.records.rns {
+						// get the address of the server
+						let socket_addr = match rns.host.clone() {
+							RnsHost::SocketAddr(socket_addr) => socket_addr,
+							RnsHost::HostPort(host, port) => {
+								let mut addr = None;
+								for question in vec![Question {
+									qname: host.split(".").map(|label| label.to_string()).collect(),
+									qtype: record_type::AAAA,
+									qclass: 1,
+								}, Question {
+									qname: host.split(".").map(|label| label.to_string()).collect(),
+									qtype: record_type::A,
+									qclass: 1,
+								}] {
+									fn handle_response(ans: Vec<Resource>, port: u16) -> Option<SocketAddr> {
+										for record in ans {
+											let mut cursor = Cursor::new(record.rdata);
+											if record.rtype == record_type::A {
+												return Some(SocketAddr::new(IpAddr::from([cursor.read_u8().unwrap(), cursor.read_u8().unwrap(), cursor.read_u8().unwrap(), cursor.read_u8().unwrap()]), port));
+											}
+											if record.rtype == record_type::AAAA {
+												return Some(SocketAddr::new(IpAddr::from([cursor.read_u16::<BigEndian>().unwrap(), cursor.read_u16::<BigEndian>().unwrap(), cursor.read_u16::<BigEndian>().unwrap(), cursor.read_u16::<BigEndian>().unwrap(), cursor.read_u16::<BigEndian>().unwrap(), cursor.read_u16::<BigEndian>().unwrap(), cursor.read_u16::<BigEndian>().unwrap(), cursor.read_u16::<BigEndian>().unwrap()]), port));
+											}
+										}
+										return None;
+									}
+									if rns.external {
+										if let Response::Ok(ans, _, _) = resolver_lookup(vec![question.clone()], options.resolver) {
+											addr = handle_response(ans, port);
+											if addr.is_some() { break; }
+										}
+									} else {
+										match handle_dns(&vec![question.clone()], options, config) {
+											Response::Ok(ans, _, _) => {
+												addr = handle_response(ans, port);
+												if addr.is_some() { break; }
+											}
+											Response::NameError => {
+												if let Response::Ok(ans, _, _) = resolver_lookup(vec![question.clone()], options.resolver) {
+													addr = handle_response(ans, port);
+													if addr.is_some() { break; }
+												}
+											}
+											_ => {}
+										}
+									};
+								}
+								
+								match addr {
+									Some(addr) => addr,
+									None => continue,
+								}
+							}
+						};
+						
+						// query the server
+						if let Response::Ok(mut rns_answer, _, _) = resolver_lookup(vec![(*question).clone()], socket_addr) {
+							answer.append(&mut rns_answer);
+						}
+						
+						if !answer.is_empty() {
+							// only query up until we get an answer
+							break;
+						}
+					}
+				}
+				
 				// we matched something; break the search
 				break;
 			}
 		}
 	}
 	
-	if answer.len() == 0 {
+	if answer.is_empty() {
 		return Response::NameError;
 	}
 	
@@ -524,6 +596,7 @@ mod test {
 					cname: vec![],
 					aname: vec![],
 					mx: vec![],
+					rns: vec![],
 				},
 			}],
 		}), Response::Ok(vec![Resource {
@@ -556,6 +629,7 @@ mod test {
 					cname: vec![],
 					aname: vec![],
 					mx: vec![],
+					rns: vec![],
 				},
 			}],
 		}), Response::Ok(vec![Resource {
@@ -594,6 +668,7 @@ mod test {
 					cname: vec![],
 					aname: vec![],
 					mx: vec![],
+					rns: vec![],
 				},
 			}],
 		}), Response::Ok(vec![Resource {
@@ -626,6 +701,7 @@ mod test {
 					cname: vec![],
 					aname: vec![],
 					mx: vec![],
+					rns: vec![],
 				},
 			}],
 		}), Response::Ok(vec![Resource {
@@ -675,6 +751,7 @@ mod test {
 					cname: vec![],
 					aname: vec![],
 					mx: vec![],
+					rns: vec![],
 				},
 			}, Zone {
 				matchers: vec![vec![Label::Basic("www".to_string()), Label::Basic("example".to_string()), Label::Basic("com".to_string())]],
@@ -688,6 +765,7 @@ mod test {
 					}],
 					aname: vec![],
 					mx: vec![],
+					rns: vec![],
 				},
 			}],
 		}), Response::Ok(vec![Resource {
@@ -723,6 +801,7 @@ mod test {
 					cname: vec![],
 					aname: vec![],
 					mx: vec![],
+					rns: vec![],
 				},
 			}, Zone {
 				matchers: vec![vec![Label::Basic("www".to_string()), Label::Basic("example".to_string()), Label::Basic("com".to_string())]],
@@ -736,6 +815,7 @@ mod test {
 					}],
 					aname: vec![],
 					mx: vec![],
+					rns: vec![],
 				},
 			}, Zone {
 				matchers: vec![vec![Label::Basic("www2".to_string()), Label::Basic("example".to_string()), Label::Basic("com".to_string())]],
@@ -749,6 +829,7 @@ mod test {
 					}],
 					aname: vec![],
 					mx: vec![],
+					rns: vec![],
 				},
 			}],
 		}), Response::Ok(vec![Resource {
@@ -794,6 +875,7 @@ mod test {
 						priority: 10,
 						host: "mail.example.com".to_string(),
 					}],
+					rns: vec![],
 				},
 			}],
 		}), Response::Ok(vec![Resource {

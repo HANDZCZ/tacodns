@@ -33,7 +33,7 @@ pub struct Header {
 	pub rcode: u8,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Question {
 	pub qname: Vec<String>,
 	pub qtype: u16,
