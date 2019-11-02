@@ -502,7 +502,7 @@ fn handle_dns(question: &Vec<Question>, options: &Options, config: &Config) -> R
 					_ => {}
 				}
 				
-				if answer.is_empty() && !zone.records.rns.is_empty() {
+				if answer.is_empty() {
 					for rns in &zone.records.rns {
 						// get the address of the server
 						let socket_addr = match rns.host.clone() {
@@ -571,8 +571,10 @@ fn handle_dns(question: &Vec<Question>, options: &Options, config: &Config) -> R
 					}
 				}
 				
-				// we matched something; break the search
-				break;
+				if !answer.is_empty() {
+					// we've got an answer; break the search
+					break;
+				}
 			}
 		}
 	}
@@ -734,6 +736,39 @@ mod test {
 			rclass: 1,
 			ttl: 100,
 			rdata: vec![11, 11, 11, 11],
+		}], vec![], vec![]));
+	}
+	
+	#[test]
+	fn test_case() {
+		assert_eq!(handle_dns(&vec![Question {
+			qname: vec!["ExAmple".to_string(), "cOm".to_string()],
+			qtype: record_type::A,
+			qclass: 1,
+		}], &test_options(), &Config {
+			ttl: Duration::from_secs(1800),
+			authority: vec![],
+			zones: vec![Zone {
+				matchers: vec![vec![Label::Basic("example".to_string()), Label::Basic("com".to_string())]],
+				records: Records {
+					a: vec![ARecord {
+						ttl: Duration::from_secs(100),
+						ip4addr: "10.10.10.10".parse().unwrap(),
+					}],
+					aaaa: vec![],
+					ns: vec![],
+					cname: vec![],
+					aname: vec![],
+					mx: vec![],
+					rns: vec![],
+				},
+			}],
+		}), Response::Ok(vec![Resource {
+			rname: vec!["ExAmple".to_string(), "cOm".to_string()],
+			rtype: record_type::A,
+			rclass: 1,
+			ttl: 100,
+			rdata: vec![10, 10, 10, 10],
 		}], vec![], vec![]));
 	}
 	
