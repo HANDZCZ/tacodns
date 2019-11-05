@@ -379,19 +379,15 @@ fn handle_dns(question: &Vec<Question>, options: &Options, config: &Config) -> R
 								qtype: question.qtype,
 								qclass: 1,
 							}];
-							match handle_dns(&question, options, config) {
-								Response::Ok(mut cname_answer, _, _) => answer.append(&mut cname_answer),
-								Response::NameError => {
-									if let Response::Ok(aname_answer, _, _) = resolver_lookup(question, options.resolver) {
-										let qname_split: Vec<String> = qname.split(".").map(|label| label.to_string()).collect();
-										for mut resource in aname_answer {
-											resource.rname = qname_split.clone();
-											answer.push(resource);
-										}
-									}
-								}
-								_ => {
-									// no-op
+							let response = match handle_dns(&question, options, config) {
+								Response::NameError => resolver_lookup(question, options.resolver),
+								x => x,
+							};
+							if let Response::Ok(aname_answer, _, _) = response {
+								let qname_split: Vec<String> = qname.split(".").map(|label| label.to_string()).collect();
+								for mut resource in aname_answer {
+									resource.rname = qname_split.clone();
+									answer.push(resource);
 								}
 							}
 						}
