@@ -490,67 +490,63 @@ fn handle_dns(question: &Question, options: &Options, config: &Config) -> (Vec<R
 			
 			if answer.is_empty() && authority.is_empty() && question.qtype != record_type::NS {
 				for rns in &zone.records.rns {
-					// get the address of the server
-					let socket_addr = match rns.host.clone() {
-						RnsHost::SocketAddr(socket_addr) => socket_addr,
-						RnsHost::HostPort(host, port) => {
-							let mut addr = None;
-							for question in vec![Question {
-								qname: host.split(".").map(|label| label.to_string()).collect(),
-								qtype: record_type::AAAA,
-								qclass: 1,
-							}, Question {
-								qname: host.split(".").map(|label| label.to_string()).collect(),
-								qtype: record_type::A,
-								qclass: 1,
-							}] {
-								fn handle_response(ans: Vec<Resource>, port: u16) -> Option<SocketAddr> {
-									for record in ans {
-										let mut cursor = Cursor::new(record.rdata);
-										if record.rtype == record_type::A {
-											return Some(SocketAddr::new(IpAddr::from([cursor.read_u8().unwrap(), cursor.read_u8().unwrap(), cursor.read_u8().unwrap(), cursor.read_u8().unwrap()]), port));
-										}
-										if record.rtype == record_type::AAAA {
-											return Some(SocketAddr::new(IpAddr::from([cursor.read_u16::<BigEndian>().unwrap(), cursor.read_u16::<BigEndian>().unwrap(), cursor.read_u16::<BigEndian>().unwrap(), cursor.read_u16::<BigEndian>().unwrap(), cursor.read_u16::<BigEndian>().unwrap(), cursor.read_u16::<BigEndian>().unwrap(), cursor.read_u16::<BigEndian>().unwrap(), cursor.read_u16::<BigEndian>().unwrap()]), port));
-										}
-									}
-									return None;
-								}
-								if rns.external {
-									if let Response::Ok(ans, _, _) = resolver_lookup(question.clone(), options.resolver) {
-										addr = handle_response(ans, port);
-										if addr.is_some() { break; }
-									}
-								} else {
-									let (ans, _, _) = handle_dns(&question, options, config);
-									if ans.len() > 0 {
-										addr = handle_response(ans, port);
-										if addr.is_some() { break; }
-									} else {
-										if let Response::Ok(ans, _, _) = resolver_lookup(question.clone(), options.resolver) {
-											addr = handle_response(ans, port);
-											if addr.is_some() { break; }
-										}
-									}
-								}
-							}
-							
-							match addr {
-								Some(addr) => addr,
-								None => continue,
+					match rns.host.clone() {
+						RnsHost::SocketAddr(socket_addr) => {
+							if let Response::Ok(mut rns_answer, mut rns_authority, _) = resolver_lookup((*question).clone(), socket_addr) {
+								answer.append(&mut rns_answer);
+								authority.append(&mut rns_authority);
 							}
 						}
-					};
-					
-					// query the server
-					if let Response::Ok(mut rns_answer, mut rns_authority, _) = resolver_lookup((*question).clone(), socket_addr) {
-						answer.append(&mut rns_answer);
-						authority.append(&mut rns_authority);
-					}
-					
-					if !answer.is_empty() || !authority.is_empty() {
-						// only query up until we get an answer
-						break;
+						RnsHost::HostPort(host, port) => {
+							fn handle_response(ans: Vec<Resource>, port: u16) -> Option<SocketAddr> {
+								for record in ans {
+									let mut cursor = Cursor::new(record.rdata);
+									if record.rtype == record_type::A {
+										return Some(SocketAddr::new(IpAddr::from([cursor.read_u8().unwrap(), cursor.read_u8().unwrap(), cursor.read_u8().unwrap(), cursor.read_u8().unwrap()]), port));
+									}
+									if record.rtype == record_type::AAAA {
+										return Some(SocketAddr::new(IpAddr::from([cursor.read_u16::<BigEndian>().unwrap(), cursor.read_u16::<BigEndian>().unwrap(), cursor.read_u16::<BigEndian>().unwrap(), cursor.read_u16::<BigEndian>().unwrap(), cursor.read_u16::<BigEndian>().unwrap(), cursor.read_u16::<BigEndian>().unwrap(), cursor.read_u16::<BigEndian>().unwrap(), cursor.read_u16::<BigEndian>().unwrap()]), port));
+									}
+								}
+								return None;
+							}
+							
+							// lookup and attempt connection over IPv6
+							for qtype in &[record_type::AAAA, record_type::A] {
+								let ns_question = Question {
+									qname: host.split(".").map(|label| label.to_string()).collect(),
+									qtype: *qtype,
+									qclass: 1,
+								};
+								let mut addr = None;
+								if rns.external {
+									if let Response::Ok(ans, _, _) = resolver_lookup(ns_question, options.resolver) {
+										addr = handle_response(ans, port);
+									}
+								} else {
+									let (ans, _, _) = handle_dns(&ns_question, options, config);
+									if ans.len() > 0 {
+										addr = handle_response(ans, port);
+									} else {
+										if let Response::Ok(ans, _, _) = resolver_lookup(ns_question, options.resolver) {
+											addr = handle_response(ans, port);
+										}
+									}
+								}
+								
+								if let Some(addr) = addr {
+									if let Response::Ok(mut rns_answer, mut rns_authority, _) = resolver_lookup(question.clone(), addr) {
+										answer.append(&mut rns_answer);
+										authority.append(&mut rns_authority);
+										
+										if !answer.is_empty() || !authority.is_empty() {
+											// only query up until we get an answer
+											break;
+										}
+									}
+								}
+							}
+						}
 					}
 				}
 			}
@@ -833,7 +829,7 @@ mod test {
 					aaaa: vec![],
 					ns: vec![NsRecord {
 						ttl: Duration::from_secs(100),
-						name: "ns.example.com".to_string()
+						name: "ns.example.com".to_string(),
 					}],
 					cname: vec![],
 					aname: vec![],
@@ -862,7 +858,7 @@ mod test {
 					aaaa: vec![],
 					ns: vec![NsRecord {
 						ttl: Duration::from_secs(100),
-						name: "ns.example.com".to_string()
+						name: "ns.example.com".to_string(),
 					}],
 					cname: vec![],
 					aname: vec![],
@@ -874,7 +870,7 @@ mod test {
 				records: Records {
 					a: vec![ARecord {
 						ttl: Duration::from_secs(100),
-						ip4addr: "1.1.1.1".parse().unwrap()
+						ip4addr: "1.1.1.1".parse().unwrap(),
 					}],
 					aaaa: vec![],
 					ns: vec![],
