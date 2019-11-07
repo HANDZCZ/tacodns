@@ -10,7 +10,7 @@ use threadpool::ThreadPool;
 
 use protocol::Resource;
 
-use crate::config::{Config, Label, NsRecord, RnsHost, ZoneMatcher};
+use crate::config::{Config, Label, RnsHost, ZoneMatcher};
 use crate::options::Options;
 use crate::server::protocol::{Question, record_type};
 
@@ -77,25 +77,30 @@ fn handle_request(buf: Vec<u8>, options: &Options, config: &Config) -> Vec<u8> {
 	let mut message = protocol::parse(&buf);
 	if options.verbose { println!("request: {:?}", message); }
 	
-	let response = handle_dns(&message.question, &options, &config);
+	assert_eq!(message.question.len(), 1);
+	
+	let question = &message.question[0];
+	let (answer, mut authority, mut additional) = handle_dns(question, &options, &config);
+	
+	// always fill the authority section with something
+	// be it an actual NS record from above (thus delegating this domain elsewhere)
+	// or a re-search, which would generally be used to point back to this server
+	if authority.is_empty() && question.qtype != record_type::NS {
+		let mut ns_question = question.clone();
+		ns_question.qtype = record_type::NS;
+		let (_, mut _authority, mut _additional) = handle_dns(&ns_question, options, config);
+		authority.append(&mut _authority);
+		additional.append(&mut _additional);
+	}
 	
 	message.header.qr = true;
 	message.header.aa = true;
 	message.header.ra = false;
 	
-	match response {
-		Response::Ok(answer, authority, additional) => {
-			message.header.rcode = 0;
-			message.answer = answer;
-			message.authority = authority;
-			message.additional = additional;
-		}
-		Response::FormatError => message.header.rcode = 1,
-		Response::ServerFailure => message.header.rcode = 2,
-		Response::NameError => message.header.rcode = 3,
-		Response::NotImplemented => message.header.rcode = 4,
-		Response::Refused => message.header.rcode = 5,
-	}
+	message.header.rcode = 0;
+	message.answer = answer;
+	message.authority = authority;
+	message.additional = additional;
 	
 	if options.verbose { println!("response: {:?}", message); }
 	return protocol::serialize(&message);
@@ -142,18 +147,18 @@ fn rewrite_xname(xname_destination: &str, qname: &str) -> String {
 }
 
 /// Performs a DNS query against a third-party recursive resolver.
-fn resolver_lookup(question: Vec<Question>, server: SocketAddr) -> Response {
+fn resolver_lookup(question: Question, server: SocketAddr) -> Response {
 	struct CacheEntry {
 		response: (Vec<Resource>, Vec<Resource>, Vec<Resource>),
 		cache_time: Instant,
 		expiration: Instant,
 	}
 	lazy_static! {
-		static ref CACHE: Mutex<HashMap<Vec<Question>, CacheEntry>> = Mutex::new(HashMap::new());
+		static ref CACHE: Mutex<HashMap<Question, CacheEntry>> = Mutex::new(HashMap::new());
 	}
 	
 	{
-		let cache: &mut HashMap<Vec<Question>, CacheEntry> = &mut *CACHE.lock().unwrap();
+		let cache: &mut HashMap<Question, CacheEntry> = &mut *CACHE.lock().unwrap();
 		let cached = cache.get(&question);
 		if let Some(entry) = cached {
 			if entry.expiration > Instant::now() {
@@ -171,7 +176,7 @@ fn resolver_lookup(question: Vec<Question>, server: SocketAddr) -> Response {
 	match TcpStream::connect(server) {
 		Err(_) => return Response::ServerFailure,
 		Ok(mut stream) => {
-			let request = protocol::serialize(&protocol::make_message_from_question(question.clone()));
+			let request = protocol::serialize(&protocol::make_message_from_question(vec![question.clone()]));
 			stream.write_u16::<BigEndian>(request.len() as u16).unwrap();
 			stream.write(request.as_slice()).unwrap();
 			
@@ -198,7 +203,7 @@ fn resolver_lookup(question: Vec<Question>, server: SocketAddr) -> Response {
 					}
 				}
 				
-				let cache: &mut HashMap<Vec<Question>, CacheEntry> = &mut *CACHE.lock().unwrap();
+				let cache: &mut HashMap<Question, CacheEntry> = &mut *CACHE.lock().unwrap();
 				cache.insert(question, CacheEntry {
 					response: (message.answer.clone(), message.authority.clone(), message.additional.clone()),
 					cache_time: Instant::now(),
@@ -316,280 +321,258 @@ fn does_match(matchers: &[ZoneMatcher], qname: &[String]) -> bool {
 	return false;
 }
 
-fn handle_dns(question: &Vec<Question>, options: &Options, config: &Config) -> Response {
+fn handle_dns(question: &Question, options: &Options, config: &Config) -> (Vec<Resource>, Vec<Resource>, Vec<Resource>) {
 	let mut answer: Vec<Resource> = Vec::new();
-	let authority: Vec<Resource> = Vec::new(); // may be made `mut` in the future
+	let mut authority: Vec<Resource> = Vec::new();
 	let mut additional: Vec<Resource> = Vec::new();
 	
-	for question in question {
-		if question.qclass != 1 { return Response::NotImplemented; }
-		let qname: String = question.qname.join(".");
-		
-		for zone in &config.zones {
-			if does_match(&zone.matchers, &question.qname) {
-				match question.qtype {
-					// CNAME
-					_ if !zone.records.cname.is_empty() => {
-						for cname in &zone.records.cname {
-							let new_name = rewrite_xname(cname.name.as_str(), qname.as_str());
-							
-							// add the CNAME to our result
-							answer.push(Resource {
-								rname: question.qname.clone(),
-								rtype: record_type::CNAME,
-								rclass: question.qclass,
-								ttl: cname.ttl.as_secs() as u32,
-								rdata: protocol::serialize_name(new_name.split('.')),
-							});
-							
-							// follow the CNAME and lookup records there
-							// (Note that this might trigger a stack overflow. We aren't handling this
-							// right now and shouldn't be considered a security issue. It's the fault of
-							// the configurer for not configuring it right.)
-							let question = vec![Question {
-								qname: new_name.split(".").map(|label| label.to_string()).collect(),
-								qtype: question.qtype,
-								qclass: 1,
-							}];
-							match handle_dns(&question, options, config) {
-								Response::Ok(mut cname_answer, _, _) => answer.append(&mut cname_answer),
-								Response::NameError => {
-									if let Response::Ok(mut cname_answer, _, _) = resolver_lookup(question, options.resolver) {
-										answer.append(&mut cname_answer);
-									}
-								}
-								_ => {
-									// no-op
-								}
-							}
-						}
-					}
-					
-					// ANAME
-					record_type::A | record_type::AAAA if !zone.records.aname.is_empty() => {
-						for aname in &zone.records.aname {
-							let new_name = rewrite_xname(aname.name.as_str(), qname.as_str());
-							
-							// follow the ANAME and lookup records there
-							// (Note that this might trigger a stack overflow. We aren't handling this
-							// right now and shouldn't be considered a security issue. It's the fault of
-							// the configurer for not configuring it right.)
-							let question = vec![Question {
-								qname: new_name.split(".").map(|label| label.to_string()).collect(),
-								qtype: question.qtype,
-								qclass: 1,
-							}];
-							let response = match handle_dns(&question, options, config) {
-								Response::NameError => resolver_lookup(question, options.resolver),
-								x => x,
-							};
-							if let Response::Ok(aname_answer, _, _) = response {
-								let qname_split: Vec<String> = qname.split(".").map(|label| label.to_string()).collect();
-								for mut resource in aname_answer {
-									resource.rname = qname_split.clone();
-									answer.push(resource);
-								}
-							}
-						}
-					}
-					
-					// A
-					record_type::A => {
-						for a in &zone.records.a {
-							answer.push(Resource {
-								rname: question.qname.clone(),
-								rtype: question.qtype,
-								rclass: question.qclass,
-								ttl: a.ttl.as_secs() as u32,
-								rdata: a.ip4addr.octets().to_vec(),
-							});
-						}
-					}
-					
-					// AAAA
-					record_type::AAAA => {
-						for aaaa in &zone.records.aaaa {
-							answer.push(Resource {
-								rname: question.qname.clone(),
-								rtype: question.qtype,
-								rclass: question.qclass,
-								ttl: aaaa.ttl.as_secs() as u32,
-								rdata: aaaa.ip6addr.octets().to_vec(),
-							});
-						}
-					}
-					
-					// NS
-					record_type::NS => {
-						let mut ns_records = vec![]; // this needs to be out here to fix a ownership issue
+	let qname: String = question.qname.join(".");
+	
+	for zone in &config.zones {
+		if does_match(&zone.matchers, &question.qname) {
+			match question.qtype {
+				// CNAME
+				_ if !zone.records.cname.is_empty() => {
+					for cname in &zone.records.cname {
+						let new_name = rewrite_xname(cname.name.as_str(), qname.as_str());
 						
-						// if this zone doesn't have any NS records, inherit from the top-level zone authority
-						let ns_records: &Vec<NsRecord> = if zone.records.ns.is_empty() {
-							for authority in &config.authority {
-								ns_records.push(NsRecord {
-									ttl: config.ttl,
-									name: authority.clone(),
-								});
-							}
-							&ns_records
-						} else {
-							&zone.records.ns
+						// add the CNAME to our result
+						answer.push(Resource {
+							rname: question.qname.clone(),
+							rtype: record_type::CNAME,
+							rclass: question.qclass,
+							ttl: cname.ttl.as_secs() as u32,
+							rdata: protocol::serialize_name(new_name.split('.')),
+						});
+						
+						// follow the CNAME and lookup records there
+						// (Note that this might trigger a stack overflow. We aren't handling this
+						// right now and shouldn't be considered a security issue. It's the fault of
+						// the configurer for not configuring it right.)
+						let question = Question {
+							qname: new_name.split(".").map(|label| label.to_string()).collect(),
+							qtype: question.qtype,
+							qclass: 1,
 						};
-						
-						for ns in ns_records {
-							// add the NS to the response
-							answer.push(Resource {
-								rname: question.qname.clone(),
-								rtype: question.qtype,
-								rclass: question.qclass,
-								ttl: ns.ttl.as_secs() as u32,
-								rdata: protocol::serialize_name(ns.name.split('.')),
-							});
-							
-							// lookup A and AAAA records for this to go in the additional section
-							let string_labels: Vec<String> = ns.name.split('.').map(|label| label.to_string()).collect();
-							
-							// lookup A
-							if let Response::Ok(mut answer, _, _) = handle_dns(&vec![Question {
-								qname: string_labels.clone(),
-								qtype: record_type::A,
-								qclass: 1,
-							}], options, config) {
-								additional.append(&mut answer);
-							}
-							
-							// lookup AAAA
-							if let Response::Ok(mut answer, _, _) = handle_dns(&vec![Question {
-								qname: string_labels,
-								qtype: record_type::AAAA,
-								qclass: 1,
-							}], options, config) {
-								additional.append(&mut answer);
+						let (mut cname_answer, _, _) = handle_dns(&question, options, config);
+						if cname_answer.len() > 0 {
+							answer.append(&mut cname_answer);
+						} else {
+							if let Response::Ok(mut cname_answer, _, _) = resolver_lookup(question, options.resolver) {
+								answer.append(&mut cname_answer);
 							}
 						}
 					}
-					
-					// SOA
-					record_type::SOA => {}
-					
-					// MX
-					record_type::MX => {
-						for mx in &zone.records.mx {
-							let mut rdata: Vec<u8> = vec![];
-							rdata.push((mx.priority >> 8) as u8);
-							rdata.push(mx.priority as u8);
-							rdata.append(&mut protocol::serialize_name(mx.host.split(".")));
-							answer.push(Resource {
-								rname: question.qname.clone(),
-								rtype: question.qtype,
-								rclass: question.qclass,
-								ttl: mx.ttl.as_secs() as u32,
-								rdata,
-							});
-						}
-					}
-					
-					// TXT
-					record_type::TXT => {}
-					
-					// SRV
-					record_type::SRV => {}
-					
-					_ => {}
 				}
 				
-				if answer.is_empty() {
-					for rns in &zone.records.rns {
-						// get the address of the server
-						let socket_addr = match rns.host.clone() {
-							RnsHost::SocketAddr(socket_addr) => socket_addr,
-							RnsHost::HostPort(host, port) => {
-								let mut addr = None;
-								for question in vec![Question {
-									qname: host.split(".").map(|label| label.to_string()).collect(),
-									qtype: record_type::AAAA,
-									qclass: 1,
-								}, Question {
-									qname: host.split(".").map(|label| label.to_string()).collect(),
-									qtype: record_type::A,
-									qclass: 1,
-								}] {
-									fn handle_response(ans: Vec<Resource>, port: u16) -> Option<SocketAddr> {
-										for record in ans {
-											let mut cursor = Cursor::new(record.rdata);
-											if record.rtype == record_type::A {
-												return Some(SocketAddr::new(IpAddr::from([cursor.read_u8().unwrap(), cursor.read_u8().unwrap(), cursor.read_u8().unwrap(), cursor.read_u8().unwrap()]), port));
-											}
-											if record.rtype == record_type::AAAA {
-												return Some(SocketAddr::new(IpAddr::from([cursor.read_u16::<BigEndian>().unwrap(), cursor.read_u16::<BigEndian>().unwrap(), cursor.read_u16::<BigEndian>().unwrap(), cursor.read_u16::<BigEndian>().unwrap(), cursor.read_u16::<BigEndian>().unwrap(), cursor.read_u16::<BigEndian>().unwrap(), cursor.read_u16::<BigEndian>().unwrap(), cursor.read_u16::<BigEndian>().unwrap()]), port));
-											}
+				// ANAME
+				record_type::A | record_type::AAAA if !zone.records.aname.is_empty() => {
+					for aname in &zone.records.aname {
+						let new_name = rewrite_xname(aname.name.as_str(), qname.as_str());
+						
+						// follow the ANAME and lookup records there
+						// (Note that this might trigger a stack overflow. We aren't handling this
+						// right now and shouldn't be considered a security issue. It's the fault of
+						// the configurer for not configuring it right.)
+						let question = Question {
+							qname: new_name.split(".").map(|label| label.to_string()).collect(),
+							qtype: question.qtype,
+							qclass: 1,
+						};
+						let mut response = handle_dns(&question, options, config);
+						if response.0.len() == 0 {
+							if let Response::Ok(answer, authority, additional) = resolver_lookup(question, options.resolver) {
+								response = (answer, authority, additional);
+							}
+						}
+						let aname_answer = response.0;
+						if aname_answer.len() > 0 {
+							let qname_split: Vec<String> = qname.split(".").map(|label| label.to_string()).collect();
+							for mut resource in aname_answer {
+								resource.rname = qname_split.clone();
+								answer.push(resource);
+							}
+						}
+					}
+				}
+				
+				// A
+				record_type::A => {
+					for a in &zone.records.a {
+						answer.push(Resource {
+							rname: question.qname.clone(),
+							rtype: question.qtype,
+							rclass: question.qclass,
+							ttl: a.ttl.as_secs() as u32,
+							rdata: a.ip4addr.octets().to_vec(),
+						});
+					}
+				}
+				
+				// AAAA
+				record_type::AAAA => {
+					for aaaa in &zone.records.aaaa {
+						answer.push(Resource {
+							rname: question.qname.clone(),
+							rtype: question.qtype,
+							rclass: question.qclass,
+							ttl: aaaa.ttl.as_secs() as u32,
+							rdata: aaaa.ip6addr.octets().to_vec(),
+						});
+					}
+				}
+				
+				// NS
+				record_type::NS => {
+					for ns in &zone.records.ns {
+						// add the NS to the response
+						authority.push(Resource {
+							rname: question.qname.clone(),
+							rtype: question.qtype,
+							rclass: question.qclass,
+							ttl: ns.ttl.as_secs() as u32,
+							rdata: protocol::serialize_name(ns.name.split('.')),
+						});
+						
+						// lookup A and AAAA records for this to go in the additional section
+						let string_labels: Vec<String> = ns.name.split('.').map(|label| label.to_string()).collect();
+						
+						// lookup A
+						let (mut answer, _, _) = handle_dns(&Question {
+							qname: string_labels.clone(),
+							qtype: record_type::A,
+							qclass: 1,
+						}, options, config);
+						if answer.len() > 0 {
+							additional.append(&mut answer);
+						}
+						
+						// lookup AAAA
+						let (mut answer, _, _) = handle_dns(&Question {
+							qname: string_labels,
+							qtype: record_type::AAAA,
+							qclass: 1,
+						}, options, config);
+						if answer.len() > 0 {
+							additional.append(&mut answer);
+						}
+					}
+				}
+				
+				// SOA
+				record_type::SOA => {}
+				
+				// MX
+				record_type::MX => {
+					for mx in &zone.records.mx {
+						let mut rdata: Vec<u8> = vec![];
+						rdata.push((mx.priority >> 8) as u8);
+						rdata.push(mx.priority as u8);
+						rdata.append(&mut protocol::serialize_name(mx.host.split(".")));
+						answer.push(Resource {
+							rname: question.qname.clone(),
+							rtype: question.qtype,
+							rclass: question.qclass,
+							ttl: mx.ttl.as_secs() as u32,
+							rdata,
+						});
+					}
+				}
+				
+				// TXT
+				record_type::TXT => {}
+				
+				// SRV
+				record_type::SRV => {}
+				
+				_ => {}
+			}
+			
+			if answer.is_empty() && authority.is_empty() {
+				for rns in &zone.records.rns {
+					// get the address of the server
+					let socket_addr = match rns.host.clone() {
+						RnsHost::SocketAddr(socket_addr) => socket_addr,
+						RnsHost::HostPort(host, port) => {
+							let mut addr = None;
+							for question in vec![Question {
+								qname: host.split(".").map(|label| label.to_string()).collect(),
+								qtype: record_type::AAAA,
+								qclass: 1,
+							}, Question {
+								qname: host.split(".").map(|label| label.to_string()).collect(),
+								qtype: record_type::A,
+								qclass: 1,
+							}] {
+								fn handle_response(ans: Vec<Resource>, port: u16) -> Option<SocketAddr> {
+									for record in ans {
+										let mut cursor = Cursor::new(record.rdata);
+										if record.rtype == record_type::A {
+											return Some(SocketAddr::new(IpAddr::from([cursor.read_u8().unwrap(), cursor.read_u8().unwrap(), cursor.read_u8().unwrap(), cursor.read_u8().unwrap()]), port));
 										}
-										return None;
+										if record.rtype == record_type::AAAA {
+											return Some(SocketAddr::new(IpAddr::from([cursor.read_u16::<BigEndian>().unwrap(), cursor.read_u16::<BigEndian>().unwrap(), cursor.read_u16::<BigEndian>().unwrap(), cursor.read_u16::<BigEndian>().unwrap(), cursor.read_u16::<BigEndian>().unwrap(), cursor.read_u16::<BigEndian>().unwrap(), cursor.read_u16::<BigEndian>().unwrap(), cursor.read_u16::<BigEndian>().unwrap()]), port));
+										}
 									}
-									if rns.external {
-										if let Response::Ok(ans, _, _) = resolver_lookup(vec![question.clone()], options.resolver) {
+									return None;
+								}
+								if rns.external {
+									if let Response::Ok(ans, _, _) = resolver_lookup(question.clone(), options.resolver) {
+										addr = handle_response(ans, port);
+										if addr.is_some() { break; }
+									}
+								} else {
+									let (ans, _, _) = handle_dns(&question, options, config);
+									if ans.len() > 0 {
+										addr = handle_response(ans, port);
+										if addr.is_some() { break; }
+									} else {
+										if let Response::Ok(ans, _, _) = resolver_lookup(question.clone(), options.resolver) {
 											addr = handle_response(ans, port);
 											if addr.is_some() { break; }
 										}
-									} else {
-										match handle_dns(&vec![question.clone()], options, config) {
-											Response::Ok(ans, _, _) => {
-												addr = handle_response(ans, port);
-												if addr.is_some() { break; }
-											}
-											Response::NameError => {
-												if let Response::Ok(ans, _, _) = resolver_lookup(vec![question.clone()], options.resolver) {
-													addr = handle_response(ans, port);
-													if addr.is_some() { break; }
-												}
-											}
-											_ => {}
-										}
-									};
-								}
-								
-								match addr {
-									Some(addr) => addr,
-									None => continue,
+									}
 								}
 							}
-						};
-						
-						// query the server
-						if let Response::Ok(mut rns_answer, _, _) = resolver_lookup(vec![(*question).clone()], socket_addr) {
-							answer.append(&mut rns_answer);
+							
+							match addr {
+								Some(addr) => addr,
+								None => continue,
+							}
 						}
-						
-						if !answer.is_empty() {
-							// only query up until we get an answer
-							break;
-						}
+					};
+					
+					// query the server
+					if let Response::Ok(mut rns_answer, mut rns_authority, _) = resolver_lookup((*question).clone(), socket_addr) {
+						answer.append(&mut rns_answer);
+						authority.append(&mut rns_authority);
+					}
+					
+					if !answer.is_empty() || !authority.is_empty() {
+						// only query up until we get an answer
+						break;
 					}
 				}
-				
-				if !answer.is_empty() {
-					// we've got an answer; break the search
-					break;
-				}
+			}
+			
+			if !answer.is_empty() || !authority.is_empty() {
+				// we've got an answer; break the search
+				break;
 			}
 		}
 	}
 	
-	if answer.is_empty() {
-		return Response::NameError;
-	}
-	
-	return Response::Ok(answer, authority, additional);
+	return (answer, authority, additional);
 }
 
 #[cfg(test)]
 mod test {
 	use std::time::Duration;
 	
-	use crate::config::{AaaaRecord, ARecord, CnameRecord, Config, Label, MxRecord, Records, Zone};
+	use crate::config::{AaaaRecord, ARecord, CnameRecord, Config, Label, MxRecord, NsRecord, Records, Zone};
 	use crate::options::Options;
 	use crate::regex::Regex;
-	use crate::server::{does_match, handle_dns, Response, rewrite_xname};
+	use crate::server::{does_match, handle_dns, rewrite_xname};
 	use crate::server::protocol::{Question, record_type, Resource};
 	
 	#[test]
@@ -665,13 +648,12 @@ mod test {
 	
 	#[test]
 	fn test_a() {
-		assert_eq!(handle_dns(&vec![Question {
+		assert_eq!(handle_dns(&Question {
 			qname: vec!["example".to_string(), "com".to_string()],
 			qtype: record_type::A,
 			qclass: 1,
-		}], &test_options(), &Config {
+		}, &test_options(), &Config {
 			ttl: Duration::from_secs(1800),
-			authority: vec![],
 			zones: vec![Zone {
 				matchers: vec![vec![Label::Basic("example".to_string()), Label::Basic("com".to_string())]],
 				records: Records {
@@ -687,7 +669,7 @@ mod test {
 					rns: vec![],
 				},
 			}],
-		}), Response::Ok(vec![Resource {
+		}), (vec![Resource {
 			rname: vec!["example".to_string(), "com".to_string()],
 			rtype: record_type::A,
 			rclass: 1,
@@ -695,13 +677,12 @@ mod test {
 			rdata: vec![10, 10, 10, 10],
 		}], vec![], vec![]));
 		
-		assert_eq!(handle_dns(&vec![Question {
+		assert_eq!(handle_dns(&Question {
 			qname: vec!["example".to_string(), "com".to_string()],
 			qtype: record_type::A,
 			qclass: 1,
-		}], &test_options(), &Config {
+		}, &test_options(), &Config {
 			ttl: Duration::from_secs(1800),
-			authority: vec![],
 			zones: vec![Zone {
 				matchers: vec![vec![Label::Basic("example".to_string()), Label::Basic("com".to_string())]],
 				records: Records {
@@ -720,7 +701,7 @@ mod test {
 					rns: vec![],
 				},
 			}],
-		}), Response::Ok(vec![Resource {
+		}), (vec![Resource {
 			rname: vec!["example".to_string(), "com".to_string()],
 			rtype: record_type::A,
 			rclass: 1,
@@ -737,13 +718,12 @@ mod test {
 	
 	#[test]
 	fn test_case() {
-		assert_eq!(handle_dns(&vec![Question {
+		assert_eq!(handle_dns(&Question {
 			qname: vec!["ExAmple".to_string(), "cOm".to_string()],
 			qtype: record_type::A,
 			qclass: 1,
-		}], &test_options(), &Config {
+		}, &test_options(), &Config {
 			ttl: Duration::from_secs(1800),
-			authority: vec![],
 			zones: vec![Zone {
 				matchers: vec![vec![Label::Basic("example".to_string()), Label::Basic("com".to_string())]],
 				records: Records {
@@ -759,7 +739,7 @@ mod test {
 					rns: vec![],
 				},
 			}],
-		}), Response::Ok(vec![Resource {
+		}), (vec![Resource {
 			rname: vec!["ExAmple".to_string(), "cOm".to_string()],
 			rtype: record_type::A,
 			rclass: 1,
@@ -770,13 +750,12 @@ mod test {
 	
 	#[test]
 	fn test_aaaa() {
-		assert_eq!(handle_dns(&vec![Question {
+		assert_eq!(handle_dns(&Question {
 			qname: vec!["example".to_string(), "com".to_string()],
 			qtype: record_type::AAAA,
 			qclass: 1,
-		}], &test_options(), &Config {
+		}, &test_options(), &Config {
 			ttl: Duration::from_secs(1800),
-			authority: vec![],
 			zones: vec![Zone {
 				matchers: vec![vec![Label::Basic("example".to_string()), Label::Basic("com".to_string())]],
 				records: Records {
@@ -792,7 +771,7 @@ mod test {
 					rns: vec![],
 				},
 			}],
-		}), Response::Ok(vec![Resource {
+		}), (vec![Resource {
 			rname: vec!["example".to_string(), "com".to_string()],
 			rtype: record_type::AAAA,
 			rclass: 1,
@@ -800,13 +779,12 @@ mod test {
 			rdata: vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
 		}], vec![], vec![]));
 		
-		assert_eq!(handle_dns(&vec![Question {
+		assert_eq!(handle_dns(&Question {
 			qname: vec!["example".to_string(), "com".to_string()],
 			qtype: record_type::AAAA,
 			qclass: 1,
-		}], &test_options(), &Config {
+		}, &test_options(), &Config {
 			ttl: Duration::from_secs(1800),
-			authority: vec![],
 			zones: vec![Zone {
 				matchers: vec![vec![Label::Basic("example".to_string()), Label::Basic("com".to_string())]],
 				records: Records {
@@ -825,7 +803,7 @@ mod test {
 					rns: vec![],
 				},
 			}],
-		}), Response::Ok(vec![Resource {
+		}), (vec![Resource {
 			rname: vec!["example".to_string(), "com".to_string()],
 			rtype: record_type::AAAA,
 			rclass: 1,
@@ -841,6 +819,87 @@ mod test {
 	}
 	
 	#[test]
+	fn test_ns() {
+		assert_eq!(handle_dns(&Question {
+			qname: vec!["example".to_string(), "com".to_string()],
+			qtype: record_type::NS,
+			qclass: 1,
+		}, &test_options(), &Config {
+			ttl: Duration::from_secs(1800),
+			zones: vec![Zone {
+				matchers: vec![vec![Label::Basic("example".to_string()), Label::Basic("com".to_string())]],
+				records: Records {
+					a: vec![],
+					aaaa: vec![],
+					ns: vec![NsRecord {
+						ttl: Duration::from_secs(100),
+						name: "ns.example.com".to_string()
+					}],
+					cname: vec![],
+					aname: vec![],
+					mx: vec![],
+					rns: vec![],
+				},
+			}],
+		}), (vec![], vec![Resource {
+			rname: vec!["example".to_string(), "com".to_string()],
+			rtype: record_type::NS,
+			rclass: 1,
+			ttl: 100,
+			rdata: vec![2, 110, 115, 7, 101, 120, 97, 109, 112, 108, 101, 3, 99, 111, 109, 0],
+		}], vec![]));
+		
+		assert_eq!(handle_dns(&Question {
+			qname: vec!["example".to_string(), "com".to_string()],
+			qtype: record_type::NS,
+			qclass: 1,
+		}, &test_options(), &Config {
+			ttl: Duration::from_secs(1800),
+			zones: vec![Zone {
+				matchers: vec![vec![Label::Basic("example".to_string()), Label::Basic("com".to_string())]],
+				records: Records {
+					a: vec![],
+					aaaa: vec![],
+					ns: vec![NsRecord {
+						ttl: Duration::from_secs(100),
+						name: "ns.example.com".to_string()
+					}],
+					cname: vec![],
+					aname: vec![],
+					mx: vec![],
+					rns: vec![],
+				},
+			}, Zone {
+				matchers: vec![vec![Label::Basic("ns".to_string()), Label::Basic("example".to_string()), Label::Basic("com".to_string())]],
+				records: Records {
+					a: vec![ARecord {
+						ttl: Duration::from_secs(100),
+						ip4addr: "1.1.1.1".parse().unwrap()
+					}],
+					aaaa: vec![],
+					ns: vec![],
+					cname: vec![],
+					aname: vec![],
+					mx: vec![],
+					rns: vec![],
+				},
+			}],
+		}), (vec![], vec![Resource {
+			rname: vec!["example".to_string(), "com".to_string()],
+			rtype: record_type::NS,
+			rclass: 1,
+			ttl: 100,
+			rdata: vec![2, 110, 115, 7, 101, 120, 97, 109, 112, 108, 101, 3, 99, 111, 109, 0],
+		}], vec![Resource {
+			rname: vec!["ns".to_string(), "example".to_string(), "com".to_string()],
+			rtype: record_type::A,
+			rclass: 1,
+			ttl: 100,
+			rdata: vec![1, 1, 1, 1],
+		}]));
+	}
+	
+	#[test]
 	fn test_rewrite_xname() {
 		// Q: www2.example.com
 		// www2.example.com CNAME www.example.com.
@@ -853,13 +912,12 @@ mod test {
 	
 	#[test]
 	fn test_cname() {
-		assert_eq!(handle_dns(&vec![Question {
+		assert_eq!(handle_dns(&Question {
 			qname: vec!["www".to_string(), "example".to_string(), "com".to_string()],
 			qtype: record_type::A,
 			qclass: 1,
-		}], &test_options(), &Config {
+		}, &test_options(), &Config {
 			ttl: Duration::from_secs(1800),
-			authority: vec![],
 			zones: vec![Zone {
 				matchers: vec![vec![Label::Basic("example".to_string()), Label::Basic("com".to_string())]],
 				records: Records {
@@ -889,7 +947,7 @@ mod test {
 					rns: vec![],
 				},
 			}],
-		}), Response::Ok(vec![Resource {
+		}), (vec![Resource {
 			rname: vec!["www".to_string(), "example".to_string(), "com".to_string()],
 			rtype: record_type::CNAME,
 			rclass: 1,
@@ -903,13 +961,12 @@ mod test {
 			rdata: vec![127, 0, 0, 1],
 		}], vec![], vec![]));
 		
-		assert_eq!(handle_dns(&vec![Question {
+		assert_eq!(handle_dns(&Question {
 			qname: vec!["www2".to_string(), "example".to_string(), "com".to_string()],
 			qtype: record_type::A,
 			qclass: 1,
-		}], &test_options(), &Config {
+		}, &test_options(), &Config {
 			ttl: Duration::from_secs(1800),
-			authority: vec![],
 			zones: vec![Zone {
 				matchers: vec![vec![Label::Basic("example".to_string()), Label::Basic("com".to_string())]],
 				records: Records {
@@ -953,7 +1010,7 @@ mod test {
 					rns: vec![],
 				},
 			}],
-		}), Response::Ok(vec![Resource {
+		}), (vec![Resource {
 			rname: vec!["www2".to_string(), "example".to_string(), "com".to_string()],
 			rtype: record_type::CNAME,
 			rclass: 1,
@@ -976,13 +1033,12 @@ mod test {
 	
 	#[test]
 	fn test_mx() {
-		assert_eq!(handle_dns(&vec![Question {
+		assert_eq!(handle_dns(&Question {
 			qname: vec!["example".to_string(), "com".to_string()],
 			qtype: record_type::MX,
 			qclass: 1,
-		}], &test_options(), &Config {
+		}, &test_options(), &Config {
 			ttl: Duration::from_secs(1800),
-			authority: vec![],
 			zones: vec![Zone {
 				matchers: vec![vec![Label::Basic("example".to_string()), Label::Basic("com".to_string())]],
 				records: Records {
@@ -999,7 +1055,7 @@ mod test {
 					rns: vec![],
 				},
 			}],
-		}), Response::Ok(vec![Resource {
+		}), (vec![Resource {
 			rname: vec!["example".to_string(), "com".to_string()],
 			rtype: record_type::MX,
 			rclass: 1,

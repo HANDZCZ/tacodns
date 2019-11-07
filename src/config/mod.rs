@@ -100,7 +100,6 @@ pub struct Zone {
 #[derive(Debug, PartialEq, Clone)]
 pub struct Config {
 	pub ttl: Duration,
-	pub authority: Vec<String>,
 	pub zones: Vec<Zone>,
 }
 
@@ -112,20 +111,6 @@ pub fn parse(yaml_data: &str) -> Config {
 	if docs.len() > 1 { panic!("Expected only one document."); }
 	let yaml = docs[0].as_hash().expect("Expected document to be mapping.");
 	
-	let authority: Vec<String> = match yaml.optional_index("authority") {
-		Some(authority_value) => {
-			let mut authority = vec![];
-			for entry in arrayify(authority_value.clone()) {
-				match entry {
-					Yaml::String(value) => authority.push(value),
-					_ => panic!("Expected string values for authority entries. Got: {:?}", entry),
-				}
-			}
-			authority
-		}
-		None => vec![],
-	};
-	
 	let ttl = match yaml.optional_index("ttl") {
 		Some(ttl_value) => Duration::from_yaml(ttl_value),
 		None => DEFAULT_TTL,
@@ -136,7 +121,6 @@ pub fn parse(yaml_data: &str) -> Config {
 	
 	return Config {
 		ttl,
-		authority,
 		zones,
 	};
 }
@@ -441,7 +425,6 @@ mod test {
   example.com:
     A: 127.0.0.1"), Config {
 			ttl: DEFAULT_TTL,
-			authority: vec![],
 			zones: vec![Zone {
 				matchers: vec![vec![Label::Basic("example".to_string()), Label::Basic("com".to_string())]],
 				records: Records {
@@ -466,7 +449,6 @@ mod test {
   example.com:
     AAAA: ::1"), Config {
 			ttl: DEFAULT_TTL,
-			authority: vec![],
 			zones: vec![Zone {
 				matchers: vec![vec![Label::Basic("example".to_string()), Label::Basic("com".to_string())]],
 				records: Records {
