@@ -488,7 +488,7 @@ fn handle_dns(question: &Question, options: &Options, config: &Config) -> (Vec<R
 				_ => {}
 			}
 			
-			if answer.is_empty() && authority.is_empty() {
+			if answer.is_empty() && authority.is_empty() && question.qtype != record_type::NS {
 				for rns in &zone.records.rns {
 					// get the address of the server
 					let socket_addr = match rns.host.clone() {
