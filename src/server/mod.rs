@@ -38,7 +38,7 @@ pub fn serve(options: Options, config: Config) {
 				let socket = udp_socket.try_clone().unwrap();
 				let instant = Instant::now();
 				pool.lock().unwrap().execute(move || {
-					let message = handle_request(buf, &options, &config);
+					let message = handle_request(buf, &options, &config, false);
 					
 					socket.send_to(&message, src).unwrap();
 					if options.verbose { println!("response took: {:?}", instant.elapsed()); }
@@ -60,7 +60,7 @@ pub fn serve(options: Options, config: Config) {
 			let config = config.clone();
 			let instant = Instant::now();
 			pool.lock().unwrap().execute(move || {
-				let message = handle_request(buf, &options, &config);
+				let message = handle_request(buf, &options, &config, true);
 				
 				stream.write_u16::<BigEndian>(message.len() as u16).unwrap();
 				stream.write(message.as_slice()).unwrap();
@@ -73,7 +73,7 @@ pub fn serve(options: Options, config: Config) {
 	tcp.join().unwrap();
 }
 
-fn handle_request(buf: Vec<u8>, options: &Options, config: &Config) -> Vec<u8> {
+fn handle_request(buf: Vec<u8>, options: &Options, config: &Config, tcp: bool) -> Vec<u8> {
 	let mut message = protocol::parse(&buf);
 	if options.verbose { println!("request: {:?}", message); }
 	
@@ -103,7 +103,7 @@ fn handle_request(buf: Vec<u8>, options: &Options, config: &Config) -> Vec<u8> {
 	message.additional = additional;
 	
 	if options.verbose { println!("response: {:?}", message); }
-	return protocol::serialize(&message);
+	return protocol::serialize(&message, tcp);
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -176,7 +176,7 @@ fn resolver_lookup(question: Question, server: SocketAddr) -> Response {
 	match TcpStream::connect(server) {
 		Err(_) => return Response::ServerFailure,
 		Ok(mut stream) => {
-			let request = protocol::serialize(&protocol::make_message_from_question(vec![question.clone()]));
+			let request = protocol::serialize(&protocol::make_message_from_question(vec![question.clone()]), true);
 			stream.write_u16::<BigEndian>(request.len() as u16).unwrap();
 			stream.write(request.as_slice()).unwrap();
 			

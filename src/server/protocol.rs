@@ -50,12 +50,26 @@ pub struct Resource {
 }
 
 #[derive(Debug, Default)]
+pub struct EdnsOption {
+	code: u16,
+	data: Vec<u8>,
+}
+
+#[derive(Debug, Default)]
+pub struct Edns {
+	udp_payload_size: u16,
+	extended_rcode_and_flags: u32,
+	options: Vec<EdnsOption>,
+}
+
+#[derive(Debug, Default)]
 pub struct Message {
 	pub header: Header,
 	pub question: Vec<Question>,
 	pub answer: Vec<Resource>,
 	pub authority: Vec<Resource>,
 	pub additional: Vec<Resource>,
+	pub edns: Option<Edns>,
 }
 
 pub fn parse(buf: &[u8]) -> Message {
@@ -161,7 +175,31 @@ pub fn parse(buf: &[u8]) -> Message {
 	}
 	message.answer = read_resources(&mut cursor, answer_count).unwrap();
 	message.authority = read_resources(&mut cursor, authority_count).unwrap();
-	message.additional = read_resources(&mut cursor, additional_count).unwrap();
+	message.additional = read_resources(&mut cursor, additional_count).unwrap().into_iter().filter(|x| if x.rtype == 41 {
+		let mut options = vec![];
+		let len = x.rdata.len() as u64;
+		let mut cursor = Cursor::new(x.rdata.clone());
+		
+		while cursor.position() < len {
+			let code = cursor.read_u16::<BigEndian>().unwrap();
+			let length = cursor.read_u16::<BigEndian>().unwrap();
+			let mut data = vec![0; length as usize];
+			cursor.read_exact(&mut data).unwrap();
+			options.push(EdnsOption {
+				code,
+				data,
+			});
+		}
+		
+		message.edns = Some(Edns {
+			udp_payload_size: x.rclass,
+			extended_rcode_and_flags: x.ttl,
+			options,
+		});
+		return false;
+	} else {
+		return true;
+	}).collect();
 	
 	return message;
 }
@@ -177,8 +215,65 @@ pub fn serialize_name<'a, I: IntoIterator<Item=&'a str>>(name: I) -> Vec<u8> {
 	return bytes;
 }
 
-pub fn serialize(message: &Message) -> Vec<u8> {
-	let mut cursor = Cursor::new(Vec::new());
+pub fn serialize(message: &Message, tcp: bool) -> Vec<u8> {
+	fn name_len(name: &Vec<String>) -> usize {
+		return name.iter().map(|name| 1 + name.len()).sum::<usize>() + 1;
+	}
+	fn compute_truncation<'a>(available_size: usize, question: &'a [Question], answer: &'a [Resource], authority: &'a [Resource], additional: &'a [Resource]) ->
+	(usize, bool, &'a [Question], &'a [Resource], &'a [Resource], &'a [Resource]) {
+		let mut size = 12;
+		
+		for (index, q) in question.iter().enumerate() {
+			let increase = name_len(&q.qname) + 4;
+			if size + increase > available_size {
+				return (size, true, &question[0..index], &answer[0..0], &authority[0..0], &additional[0..0]);
+			}
+			size += increase;
+		}
+		
+		for (index, a) in answer.iter().enumerate() {
+			let increase = name_len(&a.rname) + 10 + a.rdata.len();
+			if size + increase > available_size {
+				return (size, true, question, &answer[0..index], &authority[0..0], &additional[0..0]);
+			}
+			size += increase;
+		}
+		
+		for (index, a) in authority.iter().enumerate() {
+			let increase = name_len(&a.rname) + 10 + a.rdata.len();
+			if size + increase > available_size {
+				return (size, true, question, answer, &authority[0..index], &additional[0..0]);
+			}
+			size += increase;
+		}
+		
+		for (index, a) in additional.iter().enumerate() {
+			let increase = name_len(&a.rname) + 10 + a.rdata.len();
+			if size + increase > available_size {
+				return (size, true, question, answer, authority, &additional[0..index]);
+			}
+			size += increase;
+		}
+		
+		return (size, false, question, answer, authority, additional);
+	}
+	let available_size: u16 = if tcp { u16::max_value() } else { message.edns.as_ref().map(|edns| edns.udp_payload_size).unwrap_or(512) };
+	let mut additional;
+	let (buff_len, truncated, question, answer, authority, additional) =
+		compute_truncation(available_size as usize, &message.question, &message.answer, &message.authority, if message.edns.is_none() { &message.additional } else {
+			additional = Vec::with_capacity(message.additional.len() + 1);
+			additional.extend_from_slice(&message.additional);
+			additional.push(Resource {
+				rname: vec![],
+				rtype: 41,
+				rclass: u16::max_value(),
+				ttl: 0,
+				rdata: vec![]
+			});
+			&additional
+		});
+	assert!(buff_len <= u16::max_value() as usize);
+	let mut cursor = Cursor::new(Vec::with_capacity(buff_len));
 	
 	let header = &message.header;
 	cursor.write_u16::<BigEndian>(header.id).unwrap();
@@ -187,24 +282,24 @@ pub fn serialize(message: &Message) -> Vec<u8> {
 	flags |= (header.z << 4) as u16;
 	flags |= if header.ra { 1 } else { 0 } << 7;
 	flags |= if header.rd { 1 } else { 0 } << 8;
-	flags |= if header.tc { 1 } else { 0 } << 9;
+	flags |= if truncated { 1 } else { 0 } << 9;
 	flags |= if header.aa { 1 } else { 0 } << 10;
 	flags |= (header.opcode as u16) << 11;
 	flags |= if header.qr { 1 } else { 0 } << 15;
 	cursor.write_u16::<BigEndian>(flags).unwrap();
 	
-	cursor.write_u16::<BigEndian>(message.question.len() as u16).unwrap();
-	cursor.write_u16::<BigEndian>(message.answer.len() as u16).unwrap();
-	cursor.write_u16::<BigEndian>(message.authority.len() as u16).unwrap();
-	cursor.write_u16::<BigEndian>(message.additional.len() as u16).unwrap();
+	cursor.write_u16::<BigEndian>(question.len() as u16).unwrap();
+	cursor.write_u16::<BigEndian>(answer.len() as u16).unwrap();
+	cursor.write_u16::<BigEndian>(authority.len() as u16).unwrap();
+	cursor.write_u16::<BigEndian>(additional.len() as u16).unwrap();
 	
-	for question in &message.question {
+	for question in question {
 		cursor.write_all(serialize_name(question.qname.iter().map(|label| label.as_str())).as_slice()).unwrap();
 		cursor.write_u16::<BigEndian>(question.qtype).unwrap();
 		cursor.write_u16::<BigEndian>(question.qclass).unwrap();
 	}
 	
-	fn write_resources(cursor: &mut Cursor<Vec<u8>>, resources: &Vec<Resource>) {
+	fn write_resources(cursor: &mut Cursor<Vec<u8>>, resources: &[Resource]) {
 		for resource in resources {
 			cursor.write_all(serialize_name(resource.rname.iter().map(|label| label.as_str())).as_slice()).unwrap();
 			cursor.write_u16::<BigEndian>(resource.rtype).unwrap();
@@ -214,11 +309,13 @@ pub fn serialize(message: &Message) -> Vec<u8> {
 			cursor.write_all(resource.rdata.as_ref()).unwrap();
 		}
 	}
-	write_resources(&mut cursor, &message.answer);
-	write_resources(&mut cursor, &message.authority);
-	write_resources(&mut cursor, &message.additional);
+	write_resources(&mut cursor, answer);
+	write_resources(&mut cursor, authority);
+	write_resources(&mut cursor, additional);
 	
-	return cursor.into_inner();
+	let buffer = cursor.into_inner();
+	assert_eq!(buffer.len(), buff_len);
+	return buffer;
 }
 
 pub fn make_message_from_question(question: Vec<Question>) -> Message {
