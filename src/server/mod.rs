@@ -76,6 +76,11 @@ pub fn serve(options: Options, config: Config) {
 fn handle_request(buf: Vec<u8>, options: &Options, config: &Config, tcp: bool) -> Vec<u8> {
 	let mut message = protocol::parse(&buf);
 	if options.verbose { println!("request: {:?}", message); }
+	if message.header.qr {
+		// this is actually a response...possibly a DDoS attempt?
+		// drop it
+		panic!("Cannot process a response as a request.");
+	}
 	
 	assert_eq!(message.question.len(), 1);
 	
