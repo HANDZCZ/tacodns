@@ -506,7 +506,26 @@ fn handle_dns(question: &Question, options: &Options, config: &Config) -> (Vec<R
 				}
 				
 				// TXT
-				record_type::TXT => {}
+				record_type::TXT => {
+					for txt in &zone.records.txt {
+						let mut data = txt.data.bytes();
+						let mut rdata = vec![];
+						while data.len() > 0 {
+							let group_size = data.len().min(255);
+							rdata.push(group_size as u8);
+							for _ in 0..group_size {
+								rdata.push(data.next().unwrap())
+							}
+						}
+						answer.push(Resource {
+							rname: question.qname.clone(),
+							rtype: question.qtype,
+							rclass: question.qclass,
+							ttl: txt.ttl.as_secs() as u32,
+							rdata,
+						});
+					}
+				}
 				
 				// SRV
 				record_type::SRV => {}
@@ -591,7 +610,7 @@ fn handle_dns(question: &Question, options: &Options, config: &Config) -> (Vec<R
 mod test {
 	use std::time::Duration;
 	
-	use crate::config::{AaaaRecord, ARecord, CnameRecord, Config, Label, MxRecord, NsRecord, Records, Zone};
+	use crate::config::{AaaaRecord, ARecord, CnameRecord, Config, Label, MxRecord, NsRecord, Records, TxtRecord, Zone};
 	use crate::options::Options;
 	use crate::regex::Regex;
 	use crate::server::{does_match, handle_dns, rewrite_xname};
@@ -692,6 +711,7 @@ mod test {
 					cname: vec![],
 					aname: vec![],
 					mx: vec![],
+					txt: vec![],
 					rns: vec![],
 				},
 			}],
@@ -724,6 +744,7 @@ mod test {
 					cname: vec![],
 					aname: vec![],
 					mx: vec![],
+					txt: vec![],
 					rns: vec![],
 				},
 			}],
@@ -762,6 +783,7 @@ mod test {
 					cname: vec![],
 					aname: vec![],
 					mx: vec![],
+					txt: vec![],
 					rns: vec![],
 				},
 			}],
@@ -794,6 +816,7 @@ mod test {
 					cname: vec![],
 					aname: vec![],
 					mx: vec![],
+					txt: vec![],
 					rns: vec![],
 				},
 			}],
@@ -826,6 +849,7 @@ mod test {
 					cname: vec![],
 					aname: vec![],
 					mx: vec![],
+					txt: vec![],
 					rns: vec![],
 				},
 			}],
@@ -864,6 +888,7 @@ mod test {
 					cname: vec![],
 					aname: vec![],
 					mx: vec![],
+					txt: vec![],
 					rns: vec![],
 				},
 			}],
@@ -893,6 +918,7 @@ mod test {
 					cname: vec![],
 					aname: vec![],
 					mx: vec![],
+					txt: vec![],
 					rns: vec![],
 				},
 			}, Zone {
@@ -907,6 +933,7 @@ mod test {
 					cname: vec![],
 					aname: vec![],
 					mx: vec![],
+					txt: vec![],
 					rns: vec![],
 				},
 			}],
@@ -956,6 +983,7 @@ mod test {
 					cname: vec![],
 					aname: vec![],
 					mx: vec![],
+					txt: vec![],
 					rns: vec![],
 				},
 			}, Zone {
@@ -970,6 +998,7 @@ mod test {
 					}],
 					aname: vec![],
 					mx: vec![],
+					txt: vec![],
 					rns: vec![],
 				},
 			}],
@@ -1005,6 +1034,7 @@ mod test {
 					cname: vec![],
 					aname: vec![],
 					mx: vec![],
+					txt: vec![],
 					rns: vec![],
 				},
 			}, Zone {
@@ -1019,6 +1049,7 @@ mod test {
 					}],
 					aname: vec![],
 					mx: vec![],
+					txt: vec![],
 					rns: vec![],
 				},
 			}, Zone {
@@ -1033,6 +1064,7 @@ mod test {
 					}],
 					aname: vec![],
 					mx: vec![],
+					txt: vec![],
 					rns: vec![],
 				},
 			}],
@@ -1078,6 +1110,7 @@ mod test {
 						priority: 10,
 						host: "mail.example.com".to_string(),
 					}],
+					txt: vec![],
 					rns: vec![],
 				},
 			}],
@@ -1087,6 +1120,39 @@ mod test {
 			rclass: 1,
 			ttl: 100,
 			rdata: vec![0, 10, 4, 'm' as u8, 'a' as u8, 'i' as u8, 'l' as u8, 7, 'e' as u8, 'x' as u8, 'a' as u8, 'm' as u8, 'p' as u8, 'l' as u8, 'e' as u8, 3, 'c' as u8, 'o' as u8, 'm' as u8, 0],
+		}], vec![], vec![]));
+	}
+	
+	#[test]
+	fn test_txt() {
+		assert_eq!(handle_dns(&Question {
+			qname: vec!["example".to_string(), "com".to_string()],
+			qtype: record_type::TXT,
+			qclass: 1,
+		}, &test_options(), &Config {
+			ttl: Duration::from_secs(1800),
+			zones: vec![Zone {
+				matchers: vec![vec![Label::Basic("example".to_string()), Label::Basic("com".to_string())]],
+				records: Records {
+					a: vec![],
+					aaaa: vec![],
+					ns: vec![],
+					cname: vec![],
+					aname: vec![],
+					mx: vec![],
+					txt: vec![TxtRecord {
+						ttl: Duration::from_secs(100),
+						data: "data content".to_string(),
+					}],
+					rns: vec![],
+				},
+			}],
+		}), (vec![Resource {
+			rname: vec!["example".to_string(), "com".to_string()],
+			rtype: record_type::TXT,
+			rclass: 1,
+			ttl: 100,
+			rdata: vec![12, 'd' as u8, 'a' as u8, 't' as u8, 'a' as u8, ' ' as u8, 'c' as u8, 'o' as u8, 'n' as u8, 't' as u8, 'e' as u8, 'n' as u8, 't' as u8],
 		}], vec![], vec![]));
 	}
 }

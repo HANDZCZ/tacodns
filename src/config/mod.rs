@@ -68,6 +68,12 @@ pub struct MxRecord {
 }
 
 #[derive(Debug, PartialEq, Clone)]
+pub struct TxtRecord {
+	pub ttl: Duration,
+	pub data: String,
+}
+
+#[derive(Debug, PartialEq, Clone)]
 pub enum RnsHost {
 	SocketAddr(SocketAddr),
 	HostPort(String, u16),
@@ -88,6 +94,7 @@ pub struct Records {
 	pub cname: Vec<CnameRecord>,
 	pub aname: Vec<AnameRecord>,
 	pub mx: Vec<MxRecord>,
+	pub txt: Vec<TxtRecord>,
 	pub rns: Vec<RnsRecord>,
 }
 
@@ -298,6 +305,27 @@ fn parse_zone_content(zone: &yaml::Hash, ttl: Duration) -> Records {
 						}
 					}
 				}
+				"TXT" => {
+					for entry in entries {
+						match &entry {
+							Yaml::String(string) => {
+								let (value, ttl, flags) = parse_value_ttl(&string, ttl);
+								let mut data = value.to_string();
+								// add the flags back to the data
+								// TODO: find a better way to do this, maybe quoting and validating flags?
+								for flag in flags {
+									data.push(' ');
+									data.push_str(flag);
+								}
+								records.txt.push(TxtRecord {
+									ttl,
+									data,
+								});
+							}
+							_ => panic!("Expected String or Array: {:?}", entry),
+						}
+					}
+				}
 				"RNS" => {
 					for entry in entries {
 						let (value, ttl, flags) = parse_value_ttl(&entry.expect_str(), ttl);
@@ -357,7 +385,7 @@ impl FromTime<Duration> for Duration {
 mod test {
 	use std::time::Duration;
 	
-	use crate::config::{AaaaRecord, ARecord, Config, DEFAULT_TTL, Label, parse, parse_allwildcard, parse_basic, parse_regex, parse_subwildcard, parse_value_ttl, parse_wildcard, parse_zone_matcher, parse_zone_matchers, Records, Zone};
+	use crate::config::{AaaaRecord, ARecord, Config, DEFAULT_TTL, Label, parse, parse_allwildcard, parse_basic, parse_regex, parse_subwildcard, parse_value_ttl, parse_wildcard, parse_zone_matcher, parse_zone_matchers, Records, TxtRecord, Zone};
 	use crate::regex::Regex;
 	
 	#[test]
@@ -437,6 +465,7 @@ mod test {
 					cname: vec![],
 					aname: vec![],
 					mx: vec![],
+					txt: vec![],
 					rns: vec![],
 				},
 			}],
@@ -461,6 +490,32 @@ mod test {
 					cname: vec![],
 					aname: vec![],
 					mx: vec![],
+					txt: vec![],
+					rns: vec![],
+				},
+			}],
+		});
+	}
+	
+	#[test]
+	fn test_txt() {
+		assert_eq!(parse(r"zones:
+  example.com:
+    TXT: hello world"), Config {
+			ttl: DEFAULT_TTL,
+			zones: vec![Zone {
+				matchers: vec![vec![Label::Basic("example".to_string()), Label::Basic("com".to_string())]],
+				records: Records {
+					a: vec![],
+					aaaa: vec![],
+					ns: vec![],
+					cname: vec![],
+					aname: vec![],
+					mx: vec![],
+					txt: vec![TxtRecord {
+						ttl: DEFAULT_TTL,
+						data: "hello world".to_string(),
+					}],
 					rns: vec![],
 				},
 			}],
