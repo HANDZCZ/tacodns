@@ -11,6 +11,7 @@ use threadpool::ThreadPool;
 use protocol::Resource;
 
 use crate::config::{Config, Label, RnsHost, ZoneMatcher};
+use crate::config::Label::{AllWildcard, SubWildcard, Wildcard};
 use crate::options::Options;
 use crate::server::protocol::{Question, record_type};
 
@@ -223,8 +224,28 @@ fn resolver_lookup(question: Question, server: SocketAddr) -> Response {
 
 fn does_match(matchers: &[ZoneMatcher], qname: &[String]) -> bool {
 	'matcher: for zone_matcher in matchers {
-		let mut qname = qname.iter().map(|label| label.to_lowercase()).rev().peekable();
-		'label: for label in zone_matcher.iter().rev() {
+		// if our matcher ends in a wildcard, assume prefix mode (e.g. _acme-challenge.**)
+		// note: this will soon be replaced with depth-first search with backtracking
+		let rev = match zone_matcher.last().unwrap() {
+			Wildcard | SubWildcard | AllWildcard => false,
+			_ => true,
+		};
+		
+		let qname = qname.iter().map(|label| label.to_lowercase());
+		let qname: Box<dyn Iterator<Item=String>> = if rev {
+			Box::new(qname.rev())
+		} else {
+			Box::new(qname)
+		};
+		let mut qname = qname.peekable();
+		
+		let labels: Box<dyn Iterator<Item=&Label>> = if rev {
+			Box::new(zone_matcher.iter().rev())
+		} else {
+			Box::new(zone_matcher.iter())
+		};
+		
+		'label: for label in labels {
 			match label {
 				Label::Basic(string) => {
 					// if this label doesn't match exactly
@@ -605,6 +626,10 @@ mod test {
 		assert!(!does_match(&[vec![Label::SubWildcard, lcom.clone()]], com));
 		assert!(does_match(&[vec![Label::SubWildcard, lcom.clone()]], example_com));
 		assert!(does_match(&[vec![Label::SubWildcard, lcom.clone()]], www_example_com));
+		
+		assert!(!does_match(&[vec![Label::Basic("prefix".to_string()), Label::SubWildcard]], &["prefix".to_string()]));
+		assert!(does_match(&[vec![Label::Basic("prefix".to_string()), Label::SubWildcard]], &["prefix".to_string(), "example".to_string()]));
+		assert!(does_match(&[vec![Label::Basic("prefix".to_string()), Label::SubWildcard]], &["prefix".to_string(), "example".to_string(), "com".to_string()]));
 		
 		assert!(!does_match(&[vec![Label::AllWildcard, lcom.clone()]], &[]));
 		assert!(does_match(&[vec![Label::AllWildcard, lcom.clone()]], com));
