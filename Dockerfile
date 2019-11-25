@@ -1,10 +1,11 @@
-FROM rust:1.38.0-slim
+FROM rust:1.39.0-slim
+RUN apt-get update && apt-get install -y libssl-dev pkg-config && rm -rf /var/lib/apt/lists/*
 WORKDIR /usr/src/tacodns
 COPY . .
 RUN cargo build --release
 
 FROM ubuntu:bionic
-RUN apt-get update && apt-get install -y dumb-init && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y dumb-init libssl-dev pkg-config && rm -rf /var/lib/apt/lists/*
 COPY --from=0 /usr/src/tacodns/target/release/tacodns /usr/local/bin/tacodns
 ENTRYPOINT ["dumb-init", "--", "tacodns"]
 EXPOSE 53/udp

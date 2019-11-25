@@ -4,7 +4,9 @@ stages:
 
 test:
   stage: test
-  image: rust:1.38.0-slim
+  image: rust:1.39.0-slim
+  before_script:
+    - apt-get update && apt-get install -y libssl-dev pkg-config
   script:
     - cargo test
 

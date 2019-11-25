@@ -86,6 +86,12 @@ pub struct RnsRecord {
 	pub external: bool,
 }
 
+#[derive(Debug, PartialEq, Clone)]
+pub struct TrppRecord {
+	pub ttl: Duration,
+	pub server: String,
+}
+
 #[derive(Debug, Default, PartialEq, Clone)]
 pub struct Records {
 	pub a: Vec<ARecord>,
@@ -96,6 +102,7 @@ pub struct Records {
 	pub mx: Vec<MxRecord>,
 	pub txt: Vec<TxtRecord>,
 	pub rns: Vec<RnsRecord>,
+	pub trpp: Vec<TrppRecord>,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -338,6 +345,7 @@ fn parse_zone_content(zone: &yaml::Hash, ttl: Duration) -> Records {
 				}
 				"RNS" => {
 					for entry in entries {
+						// note: ttl value is ignored
 						let (value, ttl, flags) = parse_value_ttl(&entry.expect_str(), ttl);
 						
 						// split off the port number from the host
@@ -360,6 +368,16 @@ fn parse_zone_content(zone: &yaml::Hash, ttl: Duration) -> Records {
 							ttl,
 							host,
 							external: flags.contains(&"external"),
+						});
+					}
+				}
+				"TRPP" => {
+					for entry in entries {
+						// note: ttl value is ignored
+						let (value, ttl, _) = parse_value_ttl(&entry.expect_str(), ttl);
+						records.trpp.push(TrppRecord {
+							ttl,
+							server: value.to_string(),
 						});
 					}
 				}
@@ -479,6 +497,7 @@ mod test {
 					mx: vec![],
 					txt: vec![],
 					rns: vec![],
+					trpp: vec![],
 				},
 			}],
 		});
@@ -506,6 +525,7 @@ mod test {
 					mx: vec![],
 					txt: vec![],
 					rns: vec![],
+					trpp: vec![],
 				},
 			}],
 		});
@@ -533,6 +553,7 @@ mod test {
 						data: "hello world".to_string(),
 					}],
 					rns: vec![],
+					trpp: vec![],
 				},
 			}],
 		});

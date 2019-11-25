@@ -1,11 +1,12 @@
 use std::collections::HashMap;
 use std::io::{Cursor, Read, Write};
-use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream, UdpSocket};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream, UdpSocket};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
+use reqwest::Url;
 use threadpool::ThreadPool;
 
 use protocol::Resource;
@@ -526,16 +527,12 @@ fn handle_dns(question: &Question, options: &Options, config: &Config) -> (Vec<R
 				// MX
 				record_type::MX => {
 					for mx in &zone.records.mx {
-						let mut rdata: Vec<u8> = vec![];
-						rdata.push((mx.priority >> 8) as u8);
-						rdata.push(mx.priority as u8);
-						rdata.append(&mut protocol::serialize_name(mx.host.split(".")));
 						answer.push(Resource {
 							rname: question.qname.clone(),
 							rtype: question.qtype,
 							rclass: question.qclass,
 							ttl: mx.ttl.as_secs() as u32,
-							rdata,
+							rdata: protocol::serialize_mx(&mx.host, mx.priority),
 						});
 					}
 				}
@@ -543,21 +540,12 @@ fn handle_dns(question: &Question, options: &Options, config: &Config) -> (Vec<R
 				// TXT
 				record_type::TXT => {
 					for txt in &zone.records.txt {
-						let mut data = txt.data.bytes();
-						let mut rdata = vec![];
-						while data.len() > 0 {
-							let group_size = data.len().min(255);
-							rdata.push(group_size as u8);
-							for _ in 0..group_size {
-								rdata.push(data.next().unwrap())
-							}
-						}
 						answer.push(Resource {
 							rname: question.qname.clone(),
 							rtype: question.qtype,
 							rclass: question.qclass,
 							ttl: txt.ttl.as_secs() as u32,
-							rdata,
+							rdata: protocol::serialize_txt(&txt.data),
 						});
 					}
 				}
@@ -568,60 +556,132 @@ fn handle_dns(question: &Question, options: &Options, config: &Config) -> (Vec<R
 				_ => {}
 			}
 			
-			if answer.is_empty() && authority.is_empty() && question.qtype != record_type::NS {
-				for rns in &zone.records.rns {
-					match rns.host.clone() {
-						RnsHost::SocketAddr(socket_addr) => {
-							if let Response::Ok(mut rns_answer, mut rns_authority, _) = resolver_lookup((*question).clone(), socket_addr) {
-								answer.append(&mut rns_answer);
-								authority.append(&mut rns_authority);
-							}
+			if question.qtype != record_type::NS {
+				if answer.is_empty() && authority.is_empty() {
+					for trpp in &zone.records.trpp {
+						use serde::Deserialize;
+						#[derive(Debug, Deserialize)]
+						struct TrppMX {
+							pub host: String,
+							pub priority: Option<u16>,
 						}
-						RnsHost::HostPort(host, port) => {
-							fn handle_response(ans: Vec<Resource>, port: u16) -> Option<SocketAddr> {
-								for record in ans {
-									let mut cursor = Cursor::new(record.rdata);
-									if record.rtype == record_type::A {
-										return Some(SocketAddr::new(IpAddr::from([cursor.read_u8().unwrap(), cursor.read_u8().unwrap(), cursor.read_u8().unwrap(), cursor.read_u8().unwrap()]), port));
-									}
-									if record.rtype == record_type::AAAA {
-										return Some(SocketAddr::new(IpAddr::from([cursor.read_u16::<BigEndian>().unwrap(), cursor.read_u16::<BigEndian>().unwrap(), cursor.read_u16::<BigEndian>().unwrap(), cursor.read_u16::<BigEndian>().unwrap(), cursor.read_u16::<BigEndian>().unwrap(), cursor.read_u16::<BigEndian>().unwrap(), cursor.read_u16::<BigEndian>().unwrap(), cursor.read_u16::<BigEndian>().unwrap()]), port));
-									}
-								}
-								return None;
+						#[derive(Debug, Deserialize)]
+						#[serde(untagged)]
+						enum TrppRec {
+							MX(TrppMX),
+							String(String),
+						}
+						
+						#[derive(Debug, Deserialize)]
+						struct TrppRecord {
+							pub ttl: Option<u32>,
+							pub rec: TrppRec,
+						}
+						let body: Vec<TrppRecord> = match reqwest::blocking::get(Url::parse_with_params(&trpp.server, &[("name", question.qname.join(".")), ("type", match question.qtype {
+							record_type::A => "A",
+							record_type::AAAA => "AAAA",
+							record_type::MX => "MX",
+							record_type::TXT => "TXT",
+							_ => continue,
+						}.to_string())]).unwrap()) {
+							Err(x) => {
+								if options.verbose { println!("failed to connect to TRPP server: {:?}", x); }
+								continue;
 							}
+							Ok(res) => match res.json() {
+								Err(x) => {
+									if options.verbose { println!("failed to parse TRPP response: {:?}", x); }
+									continue;
+								}
+								Ok(body) => body,
+							},
+						};
+						if options.verbose { println!("TRPP response: {:?}", body); }
+						for record in body {
+							let rdata = match question.qtype {
+								record_type::A => if let TrppRec::String(a) = record.rec {
+									match a.parse::<Ipv4Addr>() {
+										Err(_) => continue,
+										Ok(a) => a,
+									}.octets().to_vec()
+								} else { continue; },
+								record_type::AAAA => if let TrppRec::String(aaaa) = record.rec {
+									match aaaa.parse::<Ipv6Addr>() {
+										Err(_) => continue,
+										Ok(aaaa) => aaaa,
+									}.octets().to_vec()
+								} else { continue; },
+								record_type::MX => if let TrppRec::MX(mx) = record.rec { protocol::serialize_mx(&mx.host, mx.priority.unwrap_or(10)) } else { continue; },
+								record_type::TXT => if let TrppRec::String(txt) = record.rec { protocol::serialize_txt(&txt) } else { continue; },
+								x => panic!("unknown qtype when trying to serialize TRPP response: {:?}", x),
+							};
 							
-							// lookup and attempt connection over IPv6
-							for qtype in &[record_type::AAAA, record_type::A] {
-								let ns_question = Question {
-									qname: host.split(".").map(|label| label.to_string()).collect(),
-									qtype: *qtype,
-									qclass: 1,
-								};
-								let mut addr = None;
-								if rns.external {
-									if let Response::Ok(ans, _, _) = resolver_lookup(ns_question, options.resolver) {
-										addr = handle_response(ans, port);
+							answer.push(Resource {
+								rname: question.qname.clone(),
+								rtype: question.qtype,
+								rclass: question.qclass,
+								ttl: record.ttl.unwrap_or(trpp.ttl.as_secs() as u32),
+								rdata,
+							});
+						}
+					}
+				}
+				
+				if answer.is_empty() && authority.is_empty() {
+					for rns in &zone.records.rns {
+						match rns.host.clone() {
+							RnsHost::SocketAddr(socket_addr) => {
+								if let Response::Ok(mut rns_answer, mut rns_authority, _) = resolver_lookup((*question).clone(), socket_addr) {
+									answer.append(&mut rns_answer);
+									authority.append(&mut rns_authority);
+								}
+							}
+							RnsHost::HostPort(host, port) => {
+								fn handle_response(ans: Vec<Resource>, port: u16) -> Option<SocketAddr> {
+									for record in ans {
+										let mut cursor = Cursor::new(record.rdata);
+										if record.rtype == record_type::A {
+											return Some(SocketAddr::new(IpAddr::from([cursor.read_u8().unwrap(), cursor.read_u8().unwrap(), cursor.read_u8().unwrap(), cursor.read_u8().unwrap()]), port));
+										}
+										if record.rtype == record_type::AAAA {
+											return Some(SocketAddr::new(IpAddr::from([cursor.read_u16::<BigEndian>().unwrap(), cursor.read_u16::<BigEndian>().unwrap(), cursor.read_u16::<BigEndian>().unwrap(), cursor.read_u16::<BigEndian>().unwrap(), cursor.read_u16::<BigEndian>().unwrap(), cursor.read_u16::<BigEndian>().unwrap(), cursor.read_u16::<BigEndian>().unwrap(), cursor.read_u16::<BigEndian>().unwrap()]), port));
+										}
 									}
-								} else {
-									let (ans, _, _) = handle_dns(&ns_question, options, config);
-									if ans.len() > 0 {
-										addr = handle_response(ans, port);
-									} else {
+									return None;
+								}
+								
+								// lookup and attempt connection over IPv6
+								for qtype in &[record_type::AAAA, record_type::A] {
+									let ns_question = Question {
+										qname: host.split(".").map(|label| label.to_string()).collect(),
+										qtype: *qtype,
+										qclass: 1,
+									};
+									let mut addr = None;
+									if rns.external {
 										if let Response::Ok(ans, _, _) = resolver_lookup(ns_question, options.resolver) {
 											addr = handle_response(ans, port);
 										}
+									} else {
+										let (ans, _, _) = handle_dns(&ns_question, options, config);
+										if ans.len() > 0 {
+											addr = handle_response(ans, port);
+										} else {
+											if let Response::Ok(ans, _, _) = resolver_lookup(ns_question, options.resolver) {
+												addr = handle_response(ans, port);
+											}
+										}
 									}
-								}
-								
-								if let Some(addr) = addr {
-									if let Response::Ok(mut rns_answer, mut rns_authority, _) = resolver_lookup(question.clone(), addr) {
-										answer.append(&mut rns_answer);
-										authority.append(&mut rns_authority);
-										
-										if !answer.is_empty() || !authority.is_empty() {
-											// only query up until we get an answer
-											break;
+									
+									if let Some(addr) = addr {
+										if let Response::Ok(mut rns_answer, mut rns_authority, _) = resolver_lookup(question.clone(), addr) {
+											answer.append(&mut rns_answer);
+											authority.append(&mut rns_authority);
+											
+											if !answer.is_empty() || !authority.is_empty() {
+												// only query up until we get an answer
+												break;
+											}
 										}
 									}
 								}
@@ -750,6 +810,7 @@ mod test {
 					mx: vec![],
 					txt: vec![],
 					rns: vec![],
+					trpp: vec![],
 				},
 			}],
 		}), (vec![Resource {
@@ -785,6 +846,7 @@ mod test {
 					mx: vec![],
 					txt: vec![],
 					rns: vec![],
+					trpp: vec![],
 				},
 			}],
 		}), (vec![Resource {
@@ -826,6 +888,7 @@ mod test {
 					mx: vec![],
 					txt: vec![],
 					rns: vec![],
+					trpp: vec![],
 				},
 			}],
 		}), (vec![Resource {
@@ -861,6 +924,7 @@ mod test {
 					mx: vec![],
 					txt: vec![],
 					rns: vec![],
+					trpp: vec![],
 				},
 			}],
 		}), (vec![Resource {
@@ -896,6 +960,7 @@ mod test {
 					mx: vec![],
 					txt: vec![],
 					rns: vec![],
+					trpp: vec![],
 				},
 			}],
 		}), (vec![Resource {
@@ -937,6 +1002,7 @@ mod test {
 					mx: vec![],
 					txt: vec![],
 					rns: vec![],
+					trpp: vec![],
 				},
 			}],
 		}), (vec![], vec![Resource {
@@ -969,6 +1035,7 @@ mod test {
 					mx: vec![],
 					txt: vec![],
 					rns: vec![],
+					trpp: vec![],
 				},
 			}, Zone {
 				matchers: vec![vec![Label::Basic("ns".to_string()), Label::Basic("example".to_string()), Label::Basic("com".to_string())]],
@@ -984,6 +1051,7 @@ mod test {
 					mx: vec![],
 					txt: vec![],
 					rns: vec![],
+					trpp: vec![],
 				},
 			}],
 		}), (vec![], vec![Resource {
@@ -1036,6 +1104,7 @@ mod test {
 					mx: vec![],
 					txt: vec![],
 					rns: vec![],
+					trpp: vec![],
 				},
 			}, Zone {
 				matchers: vec![vec![Label::Basic("www".to_string()), Label::Basic("example".to_string()), Label::Basic("com".to_string())]],
@@ -1051,6 +1120,7 @@ mod test {
 					mx: vec![],
 					txt: vec![],
 					rns: vec![],
+					trpp: vec![],
 				},
 			}],
 		}), (vec![Resource {
@@ -1089,6 +1159,7 @@ mod test {
 					mx: vec![],
 					txt: vec![],
 					rns: vec![],
+					trpp: vec![],
 				},
 			}, Zone {
 				matchers: vec![vec![Label::Basic("www".to_string()), Label::Basic("example".to_string()), Label::Basic("com".to_string())]],
@@ -1104,6 +1175,7 @@ mod test {
 					mx: vec![],
 					txt: vec![],
 					rns: vec![],
+					trpp: vec![],
 				},
 			}, Zone {
 				matchers: vec![vec![Label::Basic("www2".to_string()), Label::Basic("example".to_string()), Label::Basic("com".to_string())]],
@@ -1119,6 +1191,7 @@ mod test {
 					mx: vec![],
 					txt: vec![],
 					rns: vec![],
+					trpp: vec![],
 				},
 			}],
 		}), (vec![Resource {
@@ -1167,6 +1240,7 @@ mod test {
 					}],
 					txt: vec![],
 					rns: vec![],
+					trpp: vec![],
 				},
 			}],
 		}), (vec![Resource {
@@ -1202,6 +1276,7 @@ mod test {
 						data: "data content".to_string(),
 					}],
 					rns: vec![],
+					trpp: vec![],
 				},
 			}],
 		}), (vec![Resource {

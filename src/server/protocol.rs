@@ -215,6 +215,27 @@ pub fn serialize_name<'a, I: IntoIterator<Item=&'a str>>(name: I) -> Vec<u8> {
 	return bytes;
 }
 
+pub fn serialize_mx(host: &str, priority: u16) -> Vec<u8> {
+	let mut rdata: Vec<u8> = vec![];
+	rdata.push((priority >> 8) as u8);
+	rdata.push(priority as u8);
+	rdata.append(&mut serialize_name(host.split(".")));
+	return rdata;
+}
+
+pub fn serialize_txt(value: &str) -> Vec<u8> {
+	let mut data = value.bytes();
+	let mut rdata = vec![];
+	while data.len() > 0 {
+		let group_size = data.len().min(255);
+		rdata.push(group_size as u8);
+		for _ in 0..group_size {
+			rdata.push(data.next().unwrap());
+		}
+	}
+	return rdata;
+}
+
 pub fn serialize(message: &Message, tcp: bool) -> Vec<u8> {
 	fn name_len(name: &Vec<String>) -> usize {
 		return name.iter().map(|name| 1 + name.len()).sum::<usize>() + 1;
