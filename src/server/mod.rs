@@ -88,6 +88,11 @@ fn handle_request(buf: Vec<u8>, options: &Options, config: &Config, tcp: bool) -
 	let question = &message.question[0];
 	let (answer, mut authority, mut additional) = handle_dns(question, &options, &config);
 	
+	
+	if answer.is_empty() && authority.is_empty() {
+		authority.push(make_soa(&question, &config));
+	}
+	
 	// always fill the authority section with something
 	// be it an actual NS record from above (thus delegating this domain elsewhere)
 	// or a re-search, which would generally be used to point back to this server
@@ -347,6 +352,36 @@ fn does_match(matchers: &[ZoneMatcher], qname: &[String]) -> bool {
 	return false;
 }
 
+fn make_soa(question: &Question, config: &Config) -> Resource {
+	// https://tools.ietf.org/html/rfc1035#section-3.3.13
+	let mut mname = vec!["ns1".to_string()];
+	mname.append(&mut question.qname.clone());
+	let mut rname = vec!["hostmaster".to_string()];
+	rname.append(&mut question.qname.clone());
+	let serial: u32 = config.serial;
+	let refresh: u32 = 86400;
+	let retry: u32 = 7200;
+	let expire: u32 = 3600000;
+	let ttl = config.nttl.as_secs() as u32;
+	
+	let mut cursor = Cursor::new(Vec::new());
+	cursor.write_all(&protocol::serialize_name(mname.iter().map(|label| label.as_str()))).unwrap();
+	cursor.write_all(&protocol::serialize_name(rname.iter().map(|label| label.as_str()))).unwrap();
+	cursor.write_u32::<BigEndian>(serial).unwrap();
+	cursor.write_u32::<BigEndian>(refresh).unwrap();
+	cursor.write_u32::<BigEndian>(retry).unwrap();
+	cursor.write_u32::<BigEndian>(expire).unwrap();
+	cursor.write_u32::<BigEndian>(ttl).unwrap();
+	
+	Resource {
+		rname: question.qname.clone(),
+		rtype: 6,
+		rclass: question.qclass,
+		ttl,
+		rdata: cursor.into_inner(),
+	}
+}
+
 fn handle_dns(question: &Question, options: &Options, config: &Config) -> (Vec<Resource>, Vec<Resource>, Vec<Resource>) {
 	let mut answer: Vec<Resource> = Vec::new();
 	let mut authority: Vec<Resource> = Vec::new();
@@ -486,7 +521,7 @@ fn handle_dns(question: &Question, options: &Options, config: &Config) -> (Vec<R
 				}
 				
 				// SOA
-				record_type::SOA => {}
+				record_type::SOA => answer.push(make_soa(&question, &config)),
 				
 				// MX
 				record_type::MX => {
@@ -699,6 +734,8 @@ mod test {
 			qclass: 1,
 		}, &test_options(), &Config {
 			ttl: Duration::from_secs(1800),
+			nttl: Duration::from_secs(15),
+			serial: 0,
 			zones: vec![Zone {
 				matchers: vec![vec![Label::Basic("example".to_string()), Label::Basic("com".to_string())]],
 				records: Records {
@@ -729,6 +766,8 @@ mod test {
 			qclass: 1,
 		}, &test_options(), &Config {
 			ttl: Duration::from_secs(1800),
+			nttl: Duration::from_secs(15),
+			serial: 0,
 			zones: vec![Zone {
 				matchers: vec![vec![Label::Basic("example".to_string()), Label::Basic("com".to_string())]],
 				records: Records {
@@ -771,6 +810,8 @@ mod test {
 			qclass: 1,
 		}, &test_options(), &Config {
 			ttl: Duration::from_secs(1800),
+			nttl: Duration::from_secs(15),
+			serial: 0,
 			zones: vec![Zone {
 				matchers: vec![vec![Label::Basic("example".to_string()), Label::Basic("com".to_string())]],
 				records: Records {
@@ -804,6 +845,8 @@ mod test {
 			qclass: 1,
 		}, &test_options(), &Config {
 			ttl: Duration::from_secs(1800),
+			nttl: Duration::from_secs(15),
+			serial: 0,
 			zones: vec![Zone {
 				matchers: vec![vec![Label::Basic("example".to_string()), Label::Basic("com".to_string())]],
 				records: Records {
@@ -834,6 +877,8 @@ mod test {
 			qclass: 1,
 		}, &test_options(), &Config {
 			ttl: Duration::from_secs(1800),
+			nttl: Duration::from_secs(15),
+			serial: 0,
 			zones: vec![Zone {
 				matchers: vec![vec![Label::Basic("example".to_string()), Label::Basic("com".to_string())]],
 				records: Records {
@@ -876,6 +921,8 @@ mod test {
 			qclass: 1,
 		}, &test_options(), &Config {
 			ttl: Duration::from_secs(1800),
+			nttl: Duration::from_secs(15),
+			serial: 0,
 			zones: vec![Zone {
 				matchers: vec![vec![Label::Basic("example".to_string()), Label::Basic("com".to_string())]],
 				records: Records {
@@ -906,6 +953,8 @@ mod test {
 			qclass: 1,
 		}, &test_options(), &Config {
 			ttl: Duration::from_secs(1800),
+			nttl: Duration::from_secs(15),
+			serial: 0,
 			zones: vec![Zone {
 				matchers: vec![vec![Label::Basic("example".to_string()), Label::Basic("com".to_string())]],
 				records: Records {
@@ -971,6 +1020,8 @@ mod test {
 			qclass: 1,
 		}, &test_options(), &Config {
 			ttl: Duration::from_secs(1800),
+			nttl: Duration::from_secs(15),
+			serial: 0,
 			zones: vec![Zone {
 				matchers: vec![vec![Label::Basic("example".to_string()), Label::Basic("com".to_string())]],
 				records: Records {
@@ -1022,6 +1073,8 @@ mod test {
 			qclass: 1,
 		}, &test_options(), &Config {
 			ttl: Duration::from_secs(1800),
+			nttl: Duration::from_secs(15),
+			serial: 0,
 			zones: vec![Zone {
 				matchers: vec![vec![Label::Basic("example".to_string()), Label::Basic("com".to_string())]],
 				records: Records {
@@ -1097,6 +1150,8 @@ mod test {
 			qclass: 1,
 		}, &test_options(), &Config {
 			ttl: Duration::from_secs(1800),
+			nttl: Duration::from_secs(15),
+			serial: 0,
 			zones: vec![Zone {
 				matchers: vec![vec![Label::Basic("example".to_string()), Label::Basic("com".to_string())]],
 				records: Records {
@@ -1131,6 +1186,8 @@ mod test {
 			qclass: 1,
 		}, &test_options(), &Config {
 			ttl: Duration::from_secs(1800),
+			nttl: Duration::from_secs(15),
+			serial: 0,
 			zones: vec![Zone {
 				matchers: vec![vec![Label::Basic("example".to_string()), Label::Basic("com".to_string())]],
 				records: Records {

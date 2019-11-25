@@ -1,7 +1,7 @@
 extern crate yaml_rust;
 
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use nom::branch::alt;
 use nom::bytes::complete::{escaped, tag, take, take_while_m_n};
@@ -107,10 +107,13 @@ pub struct Zone {
 #[derive(Debug, PartialEq, Clone)]
 pub struct Config {
 	pub ttl: Duration,
+	pub nttl: Duration,
+	pub serial: u32,
 	pub zones: Vec<Zone>,
 }
 
 const DEFAULT_TTL: Duration = Duration::from_secs(60 * 30);
+const DEFAULT_NTTL: Duration = Duration::from_secs(15);
 
 pub fn parse(yaml_data: &str) -> Config {
 	let docs = YamlLoader::load_from_str(yaml_data).unwrap();
@@ -123,11 +126,18 @@ pub fn parse(yaml_data: &str) -> Config {
 		None => DEFAULT_TTL,
 	};
 	
+	let nttl = match yaml.optional_index("nttl") {
+		Some(nttl_value) => Duration::from_yaml(nttl_value),
+		None => DEFAULT_NTTL,
+	};
+	
 	let zones_data = yaml.optional_index("zones").expect("Expected zones field.");
 	let zones = parse_zones(zones_data, ttl);
 	
 	return Config {
 		ttl,
+		nttl,
+		serial: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as u32,
 		zones,
 	};
 }
@@ -383,9 +393,9 @@ impl FromTime<Duration> for Duration {
 
 #[cfg(test)]
 mod test {
-	use std::time::Duration;
+	use std::time::{Duration, SystemTime, UNIX_EPOCH};
 	
-	use crate::config::{AaaaRecord, ARecord, Config, DEFAULT_TTL, Label, parse, parse_allwildcard, parse_basic, parse_regex, parse_subwildcard, parse_value_ttl, parse_wildcard, parse_zone_matcher, parse_zone_matchers, Records, TxtRecord, Zone};
+	use crate::config::{AaaaRecord, ARecord, Config, DEFAULT_NTTL, DEFAULT_TTL, Label, parse, parse_allwildcard, parse_basic, parse_regex, parse_subwildcard, parse_value_ttl, parse_wildcard, parse_zone_matcher, parse_zone_matchers, Records, TxtRecord, Zone};
 	use crate::regex::Regex;
 	
 	#[test]
@@ -453,6 +463,8 @@ mod test {
   example.com:
     A: 127.0.0.1"), Config {
 			ttl: DEFAULT_TTL,
+			nttl: DEFAULT_NTTL,
+			serial: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as u32,
 			zones: vec![Zone {
 				matchers: vec![vec![Label::Basic("example".to_string()), Label::Basic("com".to_string())]],
 				records: Records {
@@ -478,6 +490,8 @@ mod test {
   example.com:
     AAAA: ::1"), Config {
 			ttl: DEFAULT_TTL,
+			nttl: DEFAULT_NTTL,
+			serial: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as u32,
 			zones: vec![Zone {
 				matchers: vec![vec![Label::Basic("example".to_string()), Label::Basic("com".to_string())]],
 				records: Records {
@@ -503,6 +517,8 @@ mod test {
   example.com:
     TXT: hello world"), Config {
 			ttl: DEFAULT_TTL,
+			nttl: DEFAULT_NTTL,
+			serial: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as u32,
 			zones: vec![Zone {
 				matchers: vec![vec![Label::Basic("example".to_string()), Label::Basic("com".to_string())]],
 				records: Records {
