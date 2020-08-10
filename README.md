@@ -1,6 +1,6 @@
 # TacoDNS
 
-Next-gen developer-friendly authoritative DNS server written in Rust.
+Developer-friendly authoritative DNS server written in Rust.
 
 ## Example
 
