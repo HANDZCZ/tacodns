@@ -2,7 +2,9 @@
 
 Next-gen developer-friendly authoritative DNS server written in Rust.
 
-## Example usage with Docker Compose
+## Example
+
+### Docker Compose
 
 ```
 version: "3.7"
@@ -20,6 +22,13 @@ services:
         zones:
           example.com:
             A: 10.10.10.10
+```
+
+### Cargo
+
+```
+nano tacodns.yml
+cargo run -- --config tacodns.yml
 ```
 
 ## Features
