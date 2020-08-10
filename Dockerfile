@@ -1,4 +1,4 @@
-FROM rust:1.39.0-slim
+FROM rust:1-slim
 RUN apt-get update && apt-get install -y libssl-dev pkg-config && rm -rf /var/lib/apt/lists/*
 WORKDIR /usr/src/tacodns
 COPY . .

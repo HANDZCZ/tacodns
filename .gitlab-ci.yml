@@ -4,7 +4,7 @@ stages:
 
 test:
   stage: test
-  image: rust:1.39.0-slim
+  image: rust:1-slim
   before_script:
     - apt-get update && apt-get install -y libssl-dev pkg-config
   script:
@@ -18,8 +18,8 @@ build:
   before_script:
     - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" $CI_REGISTRY
   script:
-    - docker build --pull -t "registry.gitlab.com/chris13524/tacodns" .
-    - docker push "registry.gitlab.com/chris13524/tacodns"
+    - docker build --pull -t "$CI_REGISTRY" -t "$CI_REGISTRY:$CI_COMMIT_SHORT_SHA" .
+    - docker push "$CI_REGISTRY"
+    - docker push "$CI_REGISTRY:$CI_COMMIT_SHORT_SHA"
   only:
     - master
-
