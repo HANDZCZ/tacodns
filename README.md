@@ -27,9 +27,19 @@ services:
 ### Cargo
 
 ```
-nano tacodns.yml
+cat >tacodns.yml <<EOF
+ttl: 30m
+zones:
+  example.com:
+    A: 10.10.10.10
+EOF
+
 cargo run -- --config tacodns.yml
 ```
+
+## Usage
+
+See `config.example.yml` and `tacodns --help`.
 
 ## Features
 
@@ -64,10 +74,6 @@ Unsupported types can be provided by an upstream DNS server connected via RNS.
   - DNSSEC
   - environment variables in config
   - URL records (resolves address records to itself and does HTTP redirect)
-
-## Usage
-
-See `config.example.yml` and `tacodns --help`.
 
 ## Spec compliance
 
