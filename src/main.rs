@@ -1,4 +1,3 @@
-#[macro_use]
 extern crate clap;
 #[macro_use]
 extern crate lazy_static; // would put this in options.rs, but #[macro_use] can only be done in crate root

@@ -266,7 +266,7 @@ fn parse_zone_content(zone: &yaml::Hash, ttl: Duration) -> Records {
 					for entry in entries {
 						let (value, ttl, _) = parse_value_ttl(&entry.expect_str(), ttl);
 						let mut nameserver = value.to_string();
-						if nameserver.ends_with(".") { nameserver.split_off(nameserver.len() - 2); }
+						if nameserver.ends_with(".") { nameserver.truncate(nameserver.len() - 2); }
 						records.ns.push(NsRecord {
 							ttl,
 							name: nameserver,

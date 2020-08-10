@@ -3,6 +3,8 @@ use std::net::{IpAddr, SocketAddr};
 
 use resolv_conf::Config;
 
+use crate::clap::Clap;
+
 /// A powerful, developer-friendly, authoritative DNS server.
 #[derive(Clap)]
 #[clap(version = "0.1", author = "Chris Smith")]
@@ -36,10 +38,11 @@ pub struct Options {
 	
 	/// Server and port to use to lookup records that aren't hosted here. Surround IPv6 addresses in
 	/// square brackets.
-	#[clap(long = "resolver", raw(default_value = "read_from_resolv_conf()"))]
+	#[clap(long = "resolver", raw(true), default_value = "read_from_resolv_conf()")]
 	pub resolver: SocketAddr,
 }
 
+#[allow(dead_code)]
 fn read_from_resolv_conf() -> &'static str {
 	let config = Config::parse(read_to_string("/etc/resolv.conf").unwrap()).unwrap();
 	let nameserver = config.nameservers.get(0).unwrap();
