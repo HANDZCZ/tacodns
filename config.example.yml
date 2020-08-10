@@ -1,0 +1,111 @@
+## Note that the content in this file isn't exactly correct.
+## YAML doesn't allow duplicate keys. So if you see duplicate
+## keys, that's just a demonstration of the options you have.
+
+# this is used later in this file
+x-digitalocean-ns:
+  &digitalocean-ns
+  NS:
+    - ns1.digitalocean.com.
+    - ns2.digitalocean.com.
+    - ns3.digitalocean.com.
+
+ttl: 30m # default TTL
+
+# all your zones!
+# Zones are matched in order. Once one of them returns a result, further ones will not resolve.
+# Note that the usage of the word "zone" is not completely compatible with the semantics of
+# normal DNS zones due to this fall-though nature.
+zones:
+
+  # simple example you should be familiar with
+  # results in:
+  #   example.com.     1800 IN A     10.10.10.10
+  #   example.com.     1800 IN AAAA  2001:0db8:85a3:0000:0000:8a2e:0370:7334
+  #   www.example1.com 1800 IN CNAME example.com.
+  example.com:
+    A: 10.10.10.10
+    AAAA: 2001:0db8:85a3:0000:0000:8a2e:0370:7334
+  www.example.com:
+    CNAME: example.com.
+
+  # listing multiple values for a record type
+  example.com:
+    A:
+      - 10.10.10.10
+      - 11.11.11.11
+
+  # example of an ANAME record
+  # like a flattened-CNAME, but only for A and AAAA records
+  example.com:
+    ANAME: example2.com.
+    MX: mail.example.com.
+
+  # mail record
+  # the priority field is optional, by default it is 10
+  example.com:
+    MX: mail.example.com.
+  example.com:
+    MX:
+      priority: 10
+      host: mail.example.com.
+
+  # TXT record
+  example.com:
+    TXT: contents
+
+  # overriding TTL values
+  example.com 15m:
+    A 1m:
+      - 10.10.10.10 0 # has 0 TTL
+      - 192.168.0.1 # has 1m TTL
+    AAAA: ::1 # has 15m TTL
+
+  # delegate subdomain
+  example.com:
+    NS:
+      - ns1.digitalocean.com.
+      - ns2.digitalocean.com.
+      - ns3.digitalocean.com.
+
+  # make that tedious process easier
+  example.com: *digitalocean-ns
+  sub1.example.com: *digitalocean-ns
+  sub2.example.com: *digitalocean-ns
+
+  # wildcards
+  "*.example.com": # any subdomain
+  "*.*.example.com": # any subdomain of any subdomain
+  "**.example.com": # entire subdomain zone
+  "***.example.com": # entire zone (including example.com)
+
+  # multiple zones
+  example.com,example2.com:
+
+  # regex
+  /example\.(?:com|org)/: # matches example.com or example.org
+  /.*/: # matches anything, functionally same as ** and ***
+
+  # a "Recursive NS" record
+  # The DNS server(s) listed will be queried for the results.
+  # Example to proxy all requests to Cloudflare DNS.
+  "***":
+    RNS: 1.1.1.1
+
+  # RNS records listed alongside other record types will behave as a "fallback" in the event the requested record type
+  # is not available.
+  # For instance, if you requested an A record, you'd get 10.10.10.10. But if you requested an AAAA record, TacoDNS
+  # would ask the 11.11.11.11 nameserver for the result.
+  example.com:
+    A: 10.10.10.10
+    RNS: 11.11.11.11
+  
+  # a "TRPP" record (TacoDNS Record Provider Protocol)
+  # supports querying an HTTP server for the response
+  # e.g. GET https://my-upstream/endpoint?name=example.com&type=A
+  # [
+  #   {"res": "1.1.1.1"},
+  # ]
+  # String value will be parsed into the record type that was requested.
+  example.com:
+    TRPP: http://my-upstream/endpoint

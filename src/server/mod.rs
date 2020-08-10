@@ -158,7 +158,7 @@ fn rewrite_xname(xname_destination: &str, qname: &str) -> String {
 	}
 }
 
-/// Performs a DNS query against a third-party recursive resolver.
+/// Performs a DNS query against another DNS server.
 fn resolver_lookup(question: Question, server: SocketAddr) -> Response {
 	struct CacheEntry {
 		response: (Vec<Resource>, Vec<Resource>, Vec<Resource>),
@@ -551,7 +551,7 @@ fn handle_dns(question: &Question, options: &Options, config: &Config) -> (Vec<R
 				}
 				
 				// SRV
-				record_type::SRV => {}
+				record_type::SRV => unimplemented!(),
 				
 				_ => {}
 			}

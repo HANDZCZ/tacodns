@@ -1,0 +1,17 @@
+version: "3.5"
+services:
+  
+  tacodns:
+    restart: always
+    image: registry.gitlab.com/chris13524/tacodns
+    ports:
+      - 127.0.0.100:53:53/udp
+    command: --config-env TACODNS
+    environment:
+      TACODNS: |
+        authority: ns1.example.com
+        zones:
+          cherry.hichris.com:
+            RNS: ns1.digitalocean.com
+    #volumes:
+    #  - ./config.yml:/etc/tacodns.yml
