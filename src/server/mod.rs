@@ -100,8 +100,8 @@ fn handle_request(buf: Vec<u8>, options: &Options, config: &Config, tcp: bool) -
 	if authority.is_empty() && question.qtype != record_type::NS {
 		let mut ns_question = question.clone();
 		ns_question.qtype = record_type::NS;
-		let (_, mut _authority, mut _additional) = handle_dns(&ns_question, options, config);
-		authority.append(&mut _authority);
+		let (mut _answer, _, mut _additional) = handle_dns(&ns_question, options, config);
+		authority.append(&mut _answer);
 		additional.append(&mut _additional);
 	}
 	
@@ -488,7 +488,7 @@ fn handle_dns(question: &Question, options: &Options, config: &Config) -> (Vec<R
 				record_type::NS => {
 					for ns in &zone.records.ns {
 						// add the NS to the response
-						authority.push(Resource {
+						answer.push(Resource {
 							rname: question.qname.clone(),
 							rtype: question.qtype,
 							rclass: question.qclass,
@@ -1005,13 +1005,13 @@ mod test {
 					trpp: vec![],
 				},
 			}],
-		}), (vec![], vec![Resource {
+		}), (vec![Resource {
 			rname: vec!["example".to_string(), "com".to_string()],
 			rtype: record_type::NS,
 			rclass: 1,
 			ttl: 100,
 			rdata: vec![2, 110, 115, 7, 101, 120, 97, 109, 112, 108, 101, 3, 99, 111, 109, 0],
-		}], vec![]));
+		}], vec![], vec![]));
 		
 		assert_eq!(handle_dns(&Question {
 			qname: vec!["example".to_string(), "com".to_string()],
@@ -1054,13 +1054,13 @@ mod test {
 					trpp: vec![],
 				},
 			}],
-		}), (vec![], vec![Resource {
+		}), (vec![Resource {
 			rname: vec!["example".to_string(), "com".to_string()],
 			rtype: record_type::NS,
 			rclass: 1,
 			ttl: 100,
 			rdata: vec![2, 110, 115, 7, 101, 120, 97, 109, 112, 108, 101, 3, 99, 111, 109, 0],
-		}], vec![Resource {
+		}], vec![], vec![Resource {
 			rname: vec!["ns".to_string(), "example".to_string(), "com".to_string()],
 			rtype: record_type::A,
 			rclass: 1,
