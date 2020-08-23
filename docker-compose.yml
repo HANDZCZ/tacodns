@@ -2,7 +2,7 @@ version: "3.7"
 services:
   tacodns:
     container_name: tacodns
-    build: .
+    image: handz/tacodns
     restart: always
     ports:
       - 53:53/udp
