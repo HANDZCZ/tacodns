@@ -13,7 +13,7 @@ version: "3.7"
 services:
   tacodns:
     restart: always
-    image: registry.gitlab.com/chris13524/tacodns
+    image: handz/tacodns
     ports:
       - 53:53/udp
       - 53:53/tcp
