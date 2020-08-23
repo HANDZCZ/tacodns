@@ -2,6 +2,8 @@
 
 Developer-friendly authoritative DNS server written in Rust.
 
+[Original repository: https://gitlab.com/chris13524/tacodns/-/tree/master](https://gitlab.com/chris13524/tacodns/-/tree/master)
+
 ## Example
 
 ### Docker Compose
