@@ -130,34 +130,6 @@ enum Response {
 	Refused,
 }
 
-fn rewrite_xname(xname_destination: &str, qname: &str) -> String {
-	// TODO perhaps this isn't the best way to operate here
-	// rather than using the regular "if it ends with a dot, make it absolute" scheme, perhaps we make our own syntax?
-	// example.com:
-	//   MX: mail.example.com
-	//   MX: .mail 
-	// www.example.com:
-	//   CNAME: example.com
-	//   CNAME: ..
-	// www2.example.com:
-	//   CNAME: www.example.com
-	//   CNAME: ..www
-	// mail.example.com:
-	
-	// generate the full name this maps to, with the trailing dot removed
-	if xname_destination.ends_with(".") {
-		// CNAME is absolute
-		xname_destination.split_at(xname_destination.len() - 1).0.to_string()
-	} else {
-		// CNAME is relative; make it absolute
-		let mut parent_name = qname;
-		if let Some(index) = parent_name.find(".") {
-			parent_name = parent_name.split_at(index + 1).1;
-		}
-		xname_destination.to_string() + "." + parent_name
-	}
-}
-
 /// Performs a DNS query against another DNS server.
 fn resolver_lookup(question: Question, server: SocketAddr) -> Response {
 	struct CacheEntry {
@@ -396,15 +368,13 @@ fn handle_dns(question: &Question, options: &Options, config: &Config) -> (Vec<R
 				// CNAME
 				_ if !zone.records.cname.is_empty() => {
 					for cname in &zone.records.cname {
-						let new_name = rewrite_xname(cname.name.as_str(), qname.as_str());
-						
 						// add the CNAME to our result
 						answer.push(Resource {
 							rname: question.qname.clone(),
 							rtype: record_type::CNAME,
 							rclass: question.qclass,
 							ttl: cname.ttl.as_secs() as u32,
-							rdata: protocol::serialize_name(new_name.split('.')),
+							rdata: protocol::serialize_name(cname.name.split('.')),
 						});
 						
 						// follow the CNAME and lookup records there
@@ -412,7 +382,7 @@ fn handle_dns(question: &Question, options: &Options, config: &Config) -> (Vec<R
 						// right now and shouldn't be considered a security issue. It's the fault of
 						// the configurer for not configuring it right.)
 						let question = Question {
-							qname: new_name.split(".").map(|label| label.to_string()).collect(),
+							qname: cname.name.split(".").map(|label| label.to_string()).collect(),
 							qtype: question.qtype,
 							qclass: 1,
 						};
@@ -430,14 +400,12 @@ fn handle_dns(question: &Question, options: &Options, config: &Config) -> (Vec<R
 				// ANAME
 				record_type::A | record_type::AAAA if !zone.records.aname.is_empty() => {
 					for aname in &zone.records.aname {
-						let new_name = rewrite_xname(aname.name.as_str(), qname.as_str());
-						
 						// follow the ANAME and lookup records there
 						// (Note that this might trigger a stack overflow. We aren't handling this
 						// right now and shouldn't be considered a security issue. It's the fault of
 						// the configurer for not configuring it right.)
 						let question = Question {
-							qname: new_name.split(".").map(|label| label.to_string()).collect(),
+							qname: aname.name.split(".").map(|label| label.to_string()).collect(),
 							qtype: question.qtype,
 							qclass: 1,
 						};
@@ -708,7 +676,7 @@ mod test {
 	use crate::config::{AaaaRecord, ARecord, CnameRecord, Config, Label, MxRecord, NsRecord, Records, TxtRecord, Zone};
 	use crate::options::Options;
 	use crate::regex::Regex;
-	use crate::server::{does_match, handle_dns, rewrite_xname};
+	use crate::server::{does_match, handle_dns};
 	use crate::server::protocol::{Question, record_type, Resource};
 	
 	#[test]
@@ -1070,17 +1038,6 @@ mod test {
 	}
 	
 	#[test]
-	fn test_rewrite_xname() {
-		// Q: www2.example.com
-		// www2.example.com CNAME www.example.com.
-		assert_eq!(rewrite_xname("www.example.com.", "www2.example.com"), "www.example.com");
-		
-		// Q: www2.example.com
-		// www2.example.com CNAME www
-		assert_eq!(rewrite_xname("www", "www2.example.com"), "www.example.com");
-	}
-	
-	#[test]
 	fn test_cname() {
 		assert_eq!(handle_dns(&Question {
 			qname: vec!["www".to_string(), "example".to_string(), "com".to_string()],
@@ -1114,7 +1071,7 @@ mod test {
 					ns: vec![],
 					cname: vec![CnameRecord {
 						ttl: Duration::from_secs(100),
-						name: "example.com.".to_string(),
+						name: "example.com".to_string(),
 					}],
 					aname: vec![],
 					mx: vec![],
@@ -1169,7 +1126,7 @@ mod test {
 					ns: vec![],
 					cname: vec![CnameRecord {
 						ttl: Duration::from_secs(100),
-						name: "example.com.".to_string(),
+						name: "example.com".to_string(),
 					}],
 					aname: vec![],
 					mx: vec![],
@@ -1185,7 +1142,7 @@ mod test {
 					ns: vec![],
 					cname: vec![CnameRecord {
 						ttl: Duration::from_secs(100),
-						name: "www".to_string(),
+						name: "www.example.com".to_string(),
 					}],
 					aname: vec![],
 					mx: vec![],

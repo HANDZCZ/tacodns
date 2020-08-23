@@ -265,11 +265,9 @@ fn parse_zone_content(zone: &yaml::Hash, ttl: Duration) -> Records {
 				"NS" => {
 					for entry in entries {
 						let (value, ttl, _) = parse_value_ttl(&entry.expect_str(), ttl);
-						let mut nameserver = value.to_string();
-						if nameserver.ends_with(".") { nameserver.truncate(nameserver.len() - 2); }
 						records.ns.push(NsRecord {
 							ttl,
-							name: nameserver,
+							name: value.trim_matches('.').to_string(),
 						});
 					}
 				}
@@ -278,7 +276,7 @@ fn parse_zone_content(zone: &yaml::Hash, ttl: Duration) -> Records {
 						let (value, ttl, _) = parse_value_ttl(&entry.expect_str(), ttl);
 						records.cname.push(CnameRecord {
 							ttl,
-							name: value.to_string(),
+							name: value.trim_matches('.').to_string(),
 						});
 					}
 				}
@@ -287,7 +285,7 @@ fn parse_zone_content(zone: &yaml::Hash, ttl: Duration) -> Records {
 						let (value, ttl, _) = parse_value_ttl(&entry.expect_str(), ttl);
 						records.aname.push(AnameRecord {
 							ttl,
-							name: value.to_string(),
+							name: value.trim_matches('.').to_string(),
 						});
 					}
 				}
@@ -299,7 +297,7 @@ fn parse_zone_content(zone: &yaml::Hash, ttl: Duration) -> Records {
 								records.mx.push(MxRecord {
 									ttl,
 									priority: 10,
-									host: value.to_string(),
+									host: value.trim_matches('.').to_string(),
 								});
 							}
 							Yaml::Hash(hash) => {
@@ -315,7 +313,7 @@ fn parse_zone_content(zone: &yaml::Hash, ttl: Duration) -> Records {
 								records.mx.push(MxRecord {
 									ttl,
 									priority: priority as u16,
-									host: host.to_string(),
+									host: host.trim_matches('.').to_string(),
 								});
 							}
 							_ => panic!("Expected String, Array, or Hash: {:?}", entry),

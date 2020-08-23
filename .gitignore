@@ -4,3 +4,5 @@
 /target
 /out
 **/*.rs.bk
+
+config.yml
