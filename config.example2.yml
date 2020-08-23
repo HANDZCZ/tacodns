@@ -1,0 +1,44 @@
+ttl: 30m
+nttl: 15s
+
+x-localhost:
+  &localhost
+  A: 127.0.0.1
+  AAAA: ::1
+
+zones:
+  test.loc 5s:
+    A 2s: 172.16.55.55
+    AAAA: 172:16:55:55::0
+    MX:
+      - 
+        priority: 10
+        host: mail.test.loc
+      - 
+        priority: 5
+        host: mail-backup.test.loc
+    NS:
+      - ns1.test.loc
+      - ns2.test.loc
+      - ns3.test.loc
+    TXT: |
+      Tohle je test :)
+      Zkus taky www.test.loc
+      nebo `cokoliv (i tecky)`.test.loc
+    
+  www.test.loc 5s:
+    CNAME: test.loc
+      
+  nope.test.loc:
+    A: 172.16.66.66
+    TXT: |
+      Hmm jen IPv4 sorry
+     
+  "**.test.loc":
+    A: 172.16.44.44
+    TXT: |
+      Toto je fallback :)
+      `cokoliv (i tecky)`.test.loc
+  
+  "***":
+    RNS: 1.1.1.1
